@@ -93,6 +93,8 @@ struct fmt {
 	const char *var;  /* variable name  (for %{..}x,i,o) */
 	const char *def;  /* default string, typically "-" */
 	int   deflen;
+	int   flags;
+#define FMT_F_ESCAPE    0x1 /* Escape the value string */
 };
 
 

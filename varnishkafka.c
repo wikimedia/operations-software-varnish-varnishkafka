@@ -114,12 +114,13 @@ static __attribute__((unused)) void fmt_dump (void) {
 
 	_DBG("%i/%i formats:", conf.fmt_cnt, conf.fmt_size);
 	for (i = 0 ; i < conf.fmt_cnt ; i++) {
-		_DBG(" #%-3i  fmt %i (%c)  var \"%s\", def \"%.*s\"",
+		_DBG(" #%-3i  fmt %i (%c)  var \"%s\", def (%i)\"%.*s\"%s",
 		     i,
 		     conf.fmt[i].id,
-		     isprint(conf.fmt[i].id) ? (char)conf.fmt[i].id : 0,
+		     isprint(conf.fmt[i].id) ? (char)conf.fmt[i].id : ' ',
 		     conf.fmt[i].var ? : "",
-		     conf.fmt[i].deflen, conf.fmt[i].def);
+		     conf.fmt[i].deflen, conf.fmt[i].deflen, conf.fmt[i].def,
+		     conf.fmt[i].flags & FMT_F_ESCAPE ? ", escape" : "");
 	}
 }
 
@@ -157,6 +158,7 @@ static __attribute__((unused)) void tag_dump (void) {
 static int format_add (int fmtr,
 		       const char *var, ssize_t varlen,
 		       const char *def, ssize_t deflen,
+		       int flags,
 		       char *errstr, size_t errstr_size) {
 	struct fmt *fmt;
 
@@ -167,9 +169,9 @@ static int format_add (int fmtr,
 
 	fmt = &conf.fmt[conf.fmt_cnt];
 
-	fmt->id = fmtr;
-	fmt->idx = conf.fmt_cnt;
-
+	fmt->id    = fmtr;
+	fmt->idx   = conf.fmt_cnt;
+	fmt->flags = flags;
 	if (var) {
 		if (varlen == -1)
 			varlen = strlen(var);
@@ -237,17 +239,29 @@ static int tag_add (struct fmt *fmt,
 }
 		     
 
+
+static inline void match_assign0 (const struct tag *tag, struct logline *lp,
+				  const char *ptr, int len);
+static void match_assign (const struct tag *tag, struct logline *lp,
+			  const char *ptr, int len);
+
+
+
+
 /**
- * Assign 'PTR' of size 'LEN' as a match for 'TAG' in logline 'LP'.
- *
- * 'PTR' must be a pointer to persistent memory:
- *   - either VSL shared memory (original VSL tag payload)
- *   - or to a buffer allocated in the 'LP' scratch buffer.
+ * Returns true if 'ptr' is within 'lp's scratch pad, else false.
  */
-#define MATCH_ASSIGN(TAG,LP,PTR,LEN) do {			\
-		(LP)->match[(TAG)->fmt->idx].ptr = (PTR);	\
-		(LP)->match[(TAG)->fmt->idx].len = (LEN);	\
-	} while (0)
+static inline int is_scratch_ptr (const struct logline *lp, const char *ptr) {
+	return (lp->scratch <= ptr && ptr < lp->scratch + sizeof(lp->scratch));
+}
+
+/**
+ * Rewinds (deallocates) the last allocation by 'len' bytes.
+ */
+static inline void scratch_rewind (struct logline *lp, int len) {
+	assert(lp->sof >= len);
+	lp->sof -= len;
+}
 
 
 /**
@@ -284,9 +298,86 @@ static inline int scratch_write (const struct tag *tag, struct logline *lp,
 
 	memcpy(dst, src, len);
 
-	MATCH_ASSIGN(tag, lp, dst, len);
+	match_assign(tag, lp, dst, len);
 
 	return len;
+}
+
+
+/**
+ * Writes 'src' of 'len' bytes to scratch buffer, escaping
+ * all unprintable characters as well as the ones defined in 'map' below.
+ * Returns -1 on error.
+ */
+static inline int scratch_write_escaped (const struct tag *tag,
+					 struct logline *lp,
+					 const char *src, int len) {
+	static const char *map[256] = {
+		['\t'] = "\\t",
+		['\n'] = "\\n",
+		['\r'] = "\\r",
+		['\v'] = "\\v",
+		['\f'] = "\\f",
+		['"']  = "\\\"",
+		[' ']  = "\\ ",
+	};
+	char *dst;
+	char *dstend;
+	char *d;
+	const char *s, *srcend = src + len;
+
+	/* Allocate initial space for escaped string. */
+	if (unlikely((dst = scratch_alloc(tag, lp, len + 10)) == NULL))
+		return -1;
+
+	dstend = dst + len + 10;
+
+	s = src;
+	d = dst;
+	while (s < srcend) {
+		int outlen = 1;
+		const char *out;
+		char tmp[6];
+
+		if (unlikely((out = map[(int)*s]) != NULL)) {
+			/* Escape from 'map' */
+			outlen = 2;
+
+		} else if (unlikely(!isprint(*s))) {
+			/* Escape non-printables as \<octal> */
+			sprintf(tmp, "\%04o", (int)*s);
+			out = tmp;
+			outlen = 5;
+
+		} else {
+			/* No escaping */
+			out = s;
+		}
+
+		/* Increase scratch pad if necessary. */
+		if (unlikely((d + outlen >= dstend))) {
+			if (unlikely(!scratch_alloc(tag, lp, outlen + 20)))
+				return -1;
+			dstend += outlen + 20;
+		}
+
+		if (likely(outlen == 1))
+			*(d++) = *out;
+		else {
+			memcpy(d, out, outlen);
+			d += outlen;
+		}
+
+		s++;
+	}
+
+	/* Rewind scratch pad to reclaim unused memory. */
+	scratch_rewind(lp, (int)(dstend-d));
+
+	/* Assign new matched string */
+	match_assign0(tag, lp, dst, (int)(d-dst));
+
+	return 0;
 }
 
 /**
@@ -311,7 +402,7 @@ static inline int scratch_printf (const struct tag *tag, struct logline *lp,
 	vsnprintf(dst, r+1, fmt, ap);
 	va_end(ap);
 
-	MATCH_ASSIGN(tag, lp, dst, r);
+	match_assign(tag, lp, dst, r);
 
 	return r;
 }
@@ -322,10 +413,64 @@ static inline int scratch_printf (const struct tag *tag, struct logline *lp,
 
 
 
+
+static inline void match_assign0 (const struct tag *tag, struct logline *lp,
+				  const char *ptr, int len) {
+	lp->match[tag->fmt->idx].ptr = ptr;
+	lp->match[tag->fmt->idx].len = len;
+}
+
+
+/**
+ * Assign 'PTR' of size 'LEN' as a match for 'TAG' in logline 'LP'.
+ *
+ * 'PTR' must be a pointer to persistent memory:
+ *   - either VSL shared memory (original VSL tag payload)
+ *   - or to a buffer allocated in the 'LP' scratch buffer.
+ */
+static void match_assign (const struct tag *tag, struct logline *lp,
+			  const char *ptr, int len) {
+
+	if (unlikely(tag->fmt->flags & FMT_F_ESCAPE)) {
+		/* If 'ptr' is in the scratch pad; rewind the scratch pad
+		 * since we'll be re-writing the string escaped. */
+		if (is_scratch_ptr(lp, ptr)) {
+			ptr = strndupa(ptr, len);
+			scratch_rewind(lp, len);
+		}
+		scratch_write_escaped(tag, lp, ptr, len);
+
+	} else {
+		match_assign0(tag, lp, ptr, len);
+	}
+}
+
+
+
 static char *strnchr (const char *s, int len, int c) {
 	const char *end = s + len;
 	while (s < end) {
 		if (*s == c)
+			return (char *)s;
+		s++;
+	}
+
+	return NULL;
+}
+
+
+/**
+ * Looks for any matching character from 'match' in 's' and returns
+ * a pointer to the first match, or NULL if none of 'match' matched 's'.
+ */
+static char *strnchrs (const char *s, int len, const char *match) {
+	const char *end = s + len;
+	char map[256] = {};
+	while (*match)
+		map[(int)*(match++)] = 1;
+	
+	while (s < end) {
+		if (map[(int)*s])
 			return (char *)s;
 		s++;
 	}
@@ -393,7 +538,7 @@ static int parse_BackendOpen (const struct tag *tag, struct logline *lp,
 	if (slen == deflen && !strncmp(s, "default", slen))
 		column_get(2, ' ', ptr, len, &s, &slen);
 
-	MATCH_ASSIGN(tag, lp, s, slen);
+	match_assign(tag, lp, s, slen);
 
 	return 0;
 }	
@@ -406,7 +551,7 @@ static int parse_U (const struct tag *tag, struct logline *lp,
 	if ((qs = strnchr(ptr, len, '?')))
 		slen = (int)(qs - ptr);
 
-	MATCH_ASSIGN(tag, lp, ptr, slen);
+	match_assign(tag, lp, ptr, slen);
 	return slen;
 }
 
@@ -420,7 +565,7 @@ static int parse_q (const struct tag *tag, struct logline *lp,
 
 	slen = len - (int)(qs - ptr);
 
-	MATCH_ASSIGN(tag, lp, qs, slen);
+	match_assign(tag, lp, qs, slen);
 	return slen;
 }
 
@@ -447,7 +592,7 @@ static int parse_t (const struct tag *tag, struct logline *lp,
 
 	tlen = strftime(dst, timelen, timefmt, &tm);
 
-	MATCH_ASSIGN(tag, lp, dst, tlen);
+	match_assign(tag, lp, dst, tlen);
 
 	return tlen;
 }
@@ -486,12 +631,12 @@ static int parse_auth_user (const struct tag *tag, struct logline *lp,
 static int parse_hitmiss (const struct tag *tag, struct logline *lp,
 			  const char *ptr, int len) {
 	if (len == 3 && !strncmp(ptr, "hit", 3)) {
-		MATCH_ASSIGN(tag, lp, ptr, len);
+		match_assign(tag, lp, ptr, len);
 		return len;
 	} else if (len == 4 &&
 		 (!strncmp(ptr, "miss", 4) ||
 		  !strncmp(ptr, "pass", 4))) {
-		MATCH_ASSIGN(tag, lp, "miss", 4);
+		match_assign(tag, lp, "miss", 4);
 		return 4;
 	}
 
@@ -503,7 +648,7 @@ static int parse_handling (const struct tag *tag, struct logline *lp,
 	if ((len == 3 && !strncmp(ptr, "hit", 3)) ||
 	    (len == 4 && (!strncmp(ptr, "miss", 4) ||
 			  !strncmp(ptr, "pass", 4)))) {
-		MATCH_ASSIGN(tag, lp, ptr, len);
+		match_assign(tag, lp, ptr, len);
 		return len;
 	}
 	return 0;
@@ -718,6 +863,7 @@ static int format_parse (const char *format_orig,
 		int deflen = -1;
 		int fmtid;
 		int i;
+		int flags = 0;
 
 		if (*s != '%') {
 			s++;
@@ -730,7 +876,7 @@ static int format_parse (const char *format_orig,
 			if (format_add(0,
 				       NULL, 0,
 				       t, (int)(s - t),
-				       errstr, errstr_size) == -1)
+				       0, errstr, errstr_size) == -1)
 				return -1;
 
 		begin = s;
@@ -738,11 +884,23 @@ static int format_parse (const char *format_orig,
 
 		/* Parse '{VAR}X': '*s' will be set to X, and 'var' to VAR.
 		 * varnishkafka also adds the following features:
-		 *  VAR?DEF,   where DEF is a default value, in this mode
+		 *
+		 *  VAR?DEF    where DEF is a default value, in this mode
 		 *             VAR can be empty, and {?DEF} may be applied to
 		 *             any formatter.
 		 *             I.e.: %{Content-type?text/html}o
 		 *                   %{?no-user}u
+		 *
+		 *  VAR!OPTION Various formatting options, see below.
+		 *
+		 * Where OPTION is one of:
+		 *  escape     Escape rogue characters in the value.
+		 *             VAR can be empty and {!escape} may be applied to
+		 *             any formatter.
+		 *             I.e. %{User-Agent!escape}i
+		 *                  %{?nouser!escape}u
+		 *
+		 * ?DEF and !OPTIONs can be combined.
 		 */
 		if (*s == '{') {
 			const char *a = s+1;
@@ -773,13 +931,53 @@ static int format_parse (const char *format_orig,
 
 			var = a;
 
-			if ((q = strnchr(a, (int)(b-a), '?'))) {
-				/* "VAR?DEF" */
-				def = q+1;
-				deflen = (int)(b - def);
+			/* Check for ?DEF and !OPTIONs */
+			if ((q = strnchrs(a, (int)(b-a), "?!"))) {
+				const char *q2 = q;
+
 				varlen = (int)(q - a);
 				if (varlen == 0)
 					var = NULL;
+
+				/* Scan all ?DEF and !OPTIONs */
+				do {
+					int qlen;
+
+					q++;
+
+					if ((q2 = strnchrs(q, (int)(b-q2-1),
+							   "?!")))
+						qlen = (int)(q2-q);
+					else
+						qlen = (int)(b-q);
+
+					switch (*(q-1))
+					{
+					case '?':
+						def = q;
+						deflen = qlen;
+						break;
+					case '!':
+						if (!strncasecmp(q, "escape",
+								 qlen))
+							flags |= FMT_F_ESCAPE;
+						else {
+							snprintf(errstr,
+								 errstr_size,
+								 "Unknown "
+								 "formatter "
+								 "option "
+								 "\"%.*s\" at "
+								 "\"%.*s...\"",
+								 qlen, q,
+								 30, a);
+							return -1;
+						}
+						break;
+					}
+
+				} while ((q = q2));
+
 			} else
 				varlen = (int)(b-a);			
 
@@ -797,7 +995,7 @@ static int format_parse (const char *format_orig,
 			def = map[(int)*s].def;
 
 		/* Add formatter to ordered list of formatters */
-		if ((fmtid = format_add(*s, var, varlen, def, deflen,
+		if ((fmtid = format_add(*s, var, varlen, def, deflen, flags,
 					errstr, errstr_size)) == -1)
 			return -1;
 
@@ -841,7 +1039,7 @@ static int format_parse (const char *format_orig,
 	 *      ^---^  add this part as verbatim string */
 	if (s > t)
 		if (format_add(0, NULL, 0,
-			       t, (int)(s - t),
+			       t, (int)(s - t), 0,
 			       errstr, errstr_size) == -1)
 			return -1;
 
@@ -1069,8 +1267,9 @@ static int tag_match (struct logline *lp, int spec, enum VSL_tag_e tagid,
 			
 		} else {
 			/* Fallback to verbatim field. */
-			MATCH_ASSIGN(tag, lp, ptr2, len2);
+			match_assign(tag, lp, ptr2, len2);
 		}
+
 	}
 
 	/* Request end: render the match string. */
