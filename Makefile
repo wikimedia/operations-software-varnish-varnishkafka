@@ -18,9 +18,7 @@ CFLAGS  += -DVARNISHKAFKA_VERSION=\"$(VER)\"
 CFLAGS  += -DVARNISHKAFKA_CONF_PATH=\"$(CFPATH)\"
 
 CFLAGS	+= -Wall -Werror -O2 -g 
-# Link librdkafka statically for now.
-LIBS	+= -Wl,-Bstatic -lrdkafka -Wl,-Bdynamic
-LIBS    += -lvarnishapi -lpthread
+LIBS    += -lrdkafka -lvarnishapi -lpthread
 
 
 all:
