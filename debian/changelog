@@ -1,0 +1,5 @@
+varnishkafka (1.0.0-1) unstable; urgency=low
+
+  * Initial release.
+
+ -- Andrew Otto (WMF) <otto@wikimedia.org>  Wed, 04 Dec 2013 19:56:07 +0000

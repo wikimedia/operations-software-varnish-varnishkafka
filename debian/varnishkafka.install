@@ -1,0 +1,3 @@
+varnishkafka                    usr/bin
+debian/varnishkafka.conf        etc
+debian/70-varnishkafka.conf     etc/rsyslog.d
