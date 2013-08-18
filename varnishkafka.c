@@ -437,6 +437,7 @@ static inline int scratch_printf (const struct tag *tag, struct logline *lp,
 
 static inline void match_assign0 (const struct tag *tag, struct logline *lp,
 				  const char *ptr, int len) {
+	assert(len >= 0);
 	lp->match[tag->fmt->idx].ptr = ptr;
 	lp->match[tag->fmt->idx].len = len;
 }
@@ -1375,8 +1376,15 @@ static int tag_match (struct logline *lp, int spec, enum VSL_tag_e tagid,
 			    strncasecmp(ptr, tag->var, tag->varlen))
 				continue;
 
-			ptr2 = t+2; /* ": " */
-			len2 = len - (int)(ptr2-ptr);
+			if (likely(len > tag->varlen + 1 /* ":" */)) {
+				ptr2 = t+2; /* ": " */
+				len2 = len - (int)(ptr2-ptr);
+			} else {
+				/* Empty value */
+				len2 = 0;
+				ptr2 = NULL;
+			}
+
 		} else {
 			ptr2 = ptr;
 			len2 = len;
