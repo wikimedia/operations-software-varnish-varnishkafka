@@ -161,6 +161,8 @@ static int conf_set (const char *name, const char *val,
 			outfunc = out_kafka;
 		else if (!strcmp(val, "-") || !strcmp(val, "stdout"))
 			outfunc = out_stdout;
+		else if (!strcmp(val, "null"))
+			outfunc = out_null;
 		else {
 			snprintf(errstr, errstr_size,
 				 "Unknown outputter \"%s\": " 

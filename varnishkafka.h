@@ -173,4 +173,5 @@ void vk_log0 (const char *func, const char *file, int line,
 
 void out_kafka (const char *buf, size_t len);
 void out_stdout (const char *buf, size_t len);
+void out_null (const char *buf, size_t len);
 extern void (*outfunc) (const char *buf, size_t len);

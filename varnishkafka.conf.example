@@ -82,6 +82,7 @@ format = %l        %n        %t        %{Varnish:time_firstbyte}x        %h     
 # Where to output varnish log lines:
 #  kafka  - (default) send to kafka broker
 #  stdout - just print to stdout (behave like varnishncsa)
+#  null   - (test) collect all tags specified by format but dont output anything
 output = kafka
 
 

@@ -1112,6 +1112,12 @@ void out_stdout (const char *buf, size_t len) {
 	printf("%.*s\n", (int)len, buf);
 }
 
+/**
+ * Null outputter
+ */
+void out_null (const char *buf, size_t len) {
+}
+
 
 /**
  * Currently selected outputter.
