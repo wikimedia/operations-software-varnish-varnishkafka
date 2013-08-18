@@ -149,7 +149,7 @@ struct conf {
 #define VK_LOG_SYSLOG 0x2
 
 	char       *format;
-	int         daemonize;	           
+	int         daemonize;
 
 	rd_kafka_conf_t       rk_conf;
 	rd_kafka_topic_conf_t topic_conf;
