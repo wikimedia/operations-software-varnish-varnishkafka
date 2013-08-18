@@ -49,6 +49,9 @@
 #include <varnish/varnishapi.h>
 #include <librdkafka/rdkafka.h>
 
+#include <yajl/yajl_common.h>
+#include <yajl/yajl_gen.h>
+
 #include "varnishkafka.h"
 #include "base64.h"
 
@@ -861,9 +864,12 @@ static int format_parse (const char *format_orig,
 		int varlen = 0;
 		const char *def = NULL;
 		int deflen = -1;
+		const char *name = NULL;
+		int namelen = -1;
 		int fmtid;
 		int i;
 		int flags = 0;
+		int type = FMT_TYPE_STRING;
 
 		if (*s != '%') {
 			s++;
@@ -931,8 +937,8 @@ static int format_parse (const char *format_orig,
 
 			var = a;
 
-			/* Check for ?DEF and !OPTIONs */
-			if ((q = strnchrs(a, (int)(b-a), "?!"))) {
+			/* Check for @NAME, ?DEF and !OPTIONs */
+			if ((q = strnchrs(a, (int)(b-a), "@?!"))) {
 				const char *q2 = q;
 
 				varlen = (int)(q - a);
@@ -946,21 +952,31 @@ static int format_parse (const char *format_orig,
 					q++;
 
 					if ((q2 = strnchrs(q, (int)(b-q2-1),
-							   "?!")))
+							   "@?!")))
 						qlen = (int)(q2-q);
 					else
 						qlen = (int)(b-q);
 
 					switch (*(q-1))
 					{
+					case '@':
+						/* Output format field name */
+						name = q;
+						namelen = qlen;
+						break;
 					case '?':
+						/* Default value */
 						def = q;
 						deflen = qlen;
 						break;
 					case '!':
+						/* Options */
 						if (!strncasecmp(q, "escape",
 								 qlen))
 							flags |= FMT_F_ESCAPE;
+						else if (!strncasecmp(q, "num",
+								      qlen))
+							type = FMT_TYPE_NUMBER;
 						else {
 							snprintf(errstr,
 								 errstr_size,
@@ -998,6 +1014,13 @@ static int format_parse (const char *format_orig,
 		if ((fmtid = format_add(*s, var, varlen, def, deflen, flags,
 					errstr, errstr_size)) == -1)
 			return -1;
+
+		conf.fmt[fmtid].type = type;
+
+		if (name) {
+			conf.fmt[fmtid].name = name;
+			conf.fmt[fmtid].namelen = namelen;
+		}
 
 		cnt++;
 
@@ -1120,14 +1143,10 @@ static void kafka_dr_cb (rd_kafka_t *rk,
 }
 
 
-
-/**
- * Render an accumulated logline to string and pass it to the output function.
- */
-static void render_match (struct logline *lp, uint64_t seq) {
+static void render_match_string (struct logline *lp) {
 	char buf[4096];
-	int  i;
 	int  of = 0;
+	int  i;
 
 	/* Render each formatter in order. */
 	for (i = 0 ; i < conf.fmt_cnt ; i++) {
@@ -1148,11 +1167,92 @@ static void render_match (struct logline *lp, uint64_t seq) {
 		memcpy(buf+of, ptr, len);
 		of += len;
 	}
-	
-	buf[of] = '\0';
 
 	/* Pass rendered log line to outputter function */
 	outfunc(buf, of);
+}
+
+
+static void render_match_json (struct logline *lp) {
+	yajl_gen g;
+	int      i;
+	const unsigned char *buf;
+	size_t   len;
+
+	g = yajl_gen_alloc(NULL);
+	yajl_gen_map_open(g);
+
+	/* Render each formatter in order. */
+	for (i = 0 ; i < conf.fmt_cnt ; i++) {
+		const void *ptr;
+		int len = lp->match[i].len;
+
+		/* Skip constant strings */
+		if (conf.fmt[i].id == 0)
+			continue;
+
+		/* Either use accumulated value, or the default value. */
+		if (len) {
+			ptr = lp->match[i].ptr;
+		} else {
+			ptr = conf.fmt[i].def;
+			len = conf.fmt[i].deflen;
+		}
+
+		/* Field name */
+		if (likely(conf.fmt[i].name != NULL))
+			yajl_gen_string(g, (unsigned char *)conf.fmt[i].name,
+					conf.fmt[i].namelen);
+		else {
+			char name = (char)conf.fmt[i].id;
+			yajl_gen_string(g, (unsigned char *)&name, 1);
+		}
+
+		/* Value */
+		switch (conf.fmt[i].type)
+		{
+		case FMT_TYPE_STRING:
+			yajl_gen_string(g, ptr, len);
+			break;
+		case FMT_TYPE_NUMBER:
+			yajl_gen_number(g, ptr, len);
+			break;
+		}
+	}
+
+	yajl_gen_map_close(g);
+
+	yajl_gen_get_buf(g, &buf, &len);
+
+	/* Pass rendered log line to outputter function */
+	outfunc((const char *)buf, len);
+
+	yajl_gen_clear(g);
+	yajl_gen_free(g);
+}
+
+/**
+ * Render an accumulated logline to string and pass it to the output function.
+ */
+static void render_match (struct logline *lp, uint64_t seq) {
+	lp->seq = seq;
+
+	switch (conf.format_type)
+	{
+	case VK_FORMAT_STRING:
+		render_match_string(lp);
+		break;
+	case VK_FORMAT_JSON:
+		render_match_json(lp);
+		break;
+
+	case VK_FORMAT_PROTOBUF:
+		break;
+
+	case VK_FORMAT_AVRO:
+		break;
+	}
+
 }
 
 

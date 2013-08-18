@@ -20,16 +20,12 @@
 #                                                                     #
 # Varnish log formatting                                              #
 #                                                                     #
-# One of:                                                             #
-#  format.string   - ASCII string output (format string)              #
-#  format.json     - JSON output (n:v, n2:v2, format string)          #
-#  format.avro     - AVRO output (schema file)                        #
-#  format.protobuf - Google Protocol Buffer output (true)             #
-#  format.nlv      - Binary Name Length Value (field specifiers)      #
+# format.type - format output type, one of:                           #
+#  string     - ASCII string output                                   #
+#  json       - JSON output                                           #
 #                                                                     #
 #                                                                     #
-#                                                                     #
-#                                                                     #
+# format - format string                                              #
 #  %X                                                                 #
 #   where 'X' is one of the standard varnishncsa(1) formatters.       #
 #   Example: %u                                                       #
@@ -41,21 +37,28 @@
 #    Example: %{User-Agent}i                                          #
 #                                                                     #
 #                                                                     #
-#  %{?DEFAULT!OPTION!OPTION..}X                                       #
+#  %{?DEFAULT@FIELD!OPTION!OPTION..}X                                 #
 #    where 'X' is any formatter,                                      #
 #                                                                     #
 #    'DEFAULT' is the default string to use if no tag was matched,    #
 #     the default default string is "-".                              #
 #                                                                     #
-#    'OPTION' is one of the formatting options:                       #
+#    'FIELD' is the field name to use with the JSON formatter.        #
+#     i.e., "%{@host}l" will be JSON encoded as: {"host":"1.2.3.4"}   #
+#                                                                     #
+#    'OPTION' is one or more of the formatting options:               #
 #        escape - escape non-printable characters to \<octalcode>     #
 #                 and \t\n\r\v\f " to their canonical                 #
 #                 backslashed notations (\t\n\r\v\f\"\ ).             #
+#        num    - for typed formatters, such as JSON, try to encode   #
+#                 the value as a number.                              #
+#
 #                                                                     #
 #    This syntax can be combined with %{VAR}X.                        #
 #    Example: %{User-Agent?Mozilla!escape}i                           #
 #             %{?nouser}u                                             #
 #             %{!escape}q                                             #
+#             %{@host}l
 #                                                                     #
 #                                                                     #
 #  Non %-prefixed strings are copied verbatim to the                  #
@@ -64,7 +67,15 @@
 #                                                                     #
 #                                                                     #
 #######################################################################
-format.string = %l        %n        %t        %{Varnish:time_firstbyte}x        %h        %{Varnish:handling}x/%s        %b        %m        http://%{Host}i%U%q        -        %{Content-Type}o        %{Referer}i        %{X-Forwarded-For}i        %{User-agent!escape}i        %{Accept-Language}i        %{X-Analytics}o
+
+# Standard string formatter
+format.type = string
+format = %l        %n        %t        %{Varnish:time_firstbyte}x        %h        %{Varnish:handling}x/%s        %b        %m        http://%{Host}i%U%q        -        %{Content-Type}o        %{Referer}i        %{X-Forwarded-For}i        %{User-agent!escape}i        %{Accept-Language}i        %{X-Analytics}o
+
+# JSON formatter
+# JSON field names are specified with %{@FIELDNAME}x
+#format.type = json
+#format = %{@host}l %{@seq_num!num}n %{@timestamp}t %{Varnish:time_firstbyte@response!num}x %{@ip}h %{Varnish:handling@handling}x %{@http_status}s %{@bytes_sent!num}b %{@request_method}m %{Host@host}i %{@uri}U %{@query}q %{Content-Type@mime_type}o %{Referer@referer}i %{X-Forwarded-For@x_forwarded_for}i %{User-Agent@user_agent}i %{Accept-Language@accept_language}i %{X-Analytics@x_analytics}o
 
 
 
@@ -72,7 +83,6 @@ format.string = %l        %n        %t        %{Varnish:time_firstbyte}x        
 #  kafka  - (default) send to kafka broker
 #  stdout - just print to stdout (behave like varnishncsa)
 output = kafka
-output = stdout
 
 
 

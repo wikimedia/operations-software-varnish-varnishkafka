@@ -123,7 +123,21 @@ static int conf_set (const char *name, const char *val,
 		conf.partition = atoi(val);
 	else if (!strcmp(name, "format"))
 		conf.format = strdup(val);
-	else if (!strcmp(name, "log.level"))
+	else if (!strcmp(name, "format.type")) {
+		if (!strcmp(val, "string"))
+			conf.format_type = VK_FORMAT_STRING;
+		else if (!strcmp(val, "json"))
+			conf.format_type = VK_FORMAT_JSON;
+		else if (!strcmp(val, "protobuf"))
+			conf.format_type = VK_FORMAT_PROTOBUF;
+		else if (!strcmp(val, "avro"))
+			conf.format_type = VK_FORMAT_AVRO;
+		else {
+			snprintf(errstr, errstr_size,
+				 "Unknown format.type value \"%s\"", val);
+			return -1;
+		}
+	} else if (!strcmp(name, "log.level"))
 		conf.log_level = atoi(val);
 	else if (!strcmp(name, "log.stderr")) {
 		if (conf_tof(val))

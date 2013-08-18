@@ -63,6 +63,9 @@ struct logline {
 	/* Tags seen (for -m regexp) */
 	uint64_t tags_seen;
 
+	/* Sequence number */
+	uint64_t seq;
+
 	/* Scratch pad */
 	int      sof;
 	char     scratch[512];  /* Must be at end of struct */
@@ -88,11 +91,17 @@ struct tag {
  * Formatting from format
  */
 struct fmt {
-	int   id;
-	int   idx;
+	int   id;         /* formatter (i.e., (char)'r' in "%r") */
+	int   idx;        /* fmt[] array index */
 	const char *var;  /* variable name  (for %{..}x,i,o) */
 	const char *def;  /* default string, typically "-" */
-	int   deflen;
+	int   deflen;     /* default string's length */
+	const char *name; /* field name (for JSON, et.al) */
+	int   namelen;    /* name length */
+	enum {
+		FMT_TYPE_STRING,
+		FMT_TYPE_NUMBER,
+	}     type;       /* output type (for JSON, et.al) */
 	int   flags;
 #define FMT_F_ESCAPE    0x1 /* Escape the value string */
 };
@@ -117,8 +126,16 @@ struct conf {
 	int         fmt_cnt;
 	int         fmt_size;
 
-	uint64_t sequence_number;
+	uint64_t    sequence_number;
 
+	enum {
+		VK_FORMAT_STRING,
+		VK_FORMAT_JSON,
+		VK_FORMAT_PROTOBUF,
+		VK_FORMAT_AVRO,
+	} format_type;
+	
+	/* Kafka config */
 	int         partition;
 	char       *topic;
 

@@ -18,7 +18,8 @@ CFLAGS  += -DVARNISHKAFKA_VERSION=\"$(VER)\"
 CFLAGS  += -DVARNISHKAFKA_CONF_PATH=\"$(CFPATH)\"
 
 CFLAGS	+= -Wall -Werror -O2 -g 
-LIBS    += -lrdkafka -lvarnishapi -lpthread
+LIBS	+= -lyajl
+LIBS    += -lrdkafka -lvarnishapi -lpthread -lrt
 
 
 all:
