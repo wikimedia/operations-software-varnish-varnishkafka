@@ -68,7 +68,7 @@ struct logline {
 
 	/* Scratch pad */
 	int      sof;
-	char     scratch[512];  /* Must be at end of struct */
+	char     scratch[2048];  /* Must be at end of struct */
 };
 
 
@@ -128,6 +128,7 @@ struct conf {
 
 	uint64_t    sequence_number;
 
+	int         datacopy;
 	enum {
 		VK_FORMAT_STRING,
 		VK_FORMAT_JSON,

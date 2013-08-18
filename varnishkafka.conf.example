@@ -86,6 +86,17 @@ format = %l        %n        %t        %{Varnish:time_firstbyte}x        %h     
 output = kafka
 
 
+# EXPERIMENTAL
+# Indicates if the log tag data read from VSL files should be copied instantly
+# when read (true). If this is set to false the data is assumed to be
+# persistent (for the duration of collecting and formatting a single request)
+# and no copies will be made, thus improving performance.
+#
+# NOTE:
+#   Must be set to true for offline files (-r file..) due to the way
+#   libvarnishapi reads its data.
+log.data.copy = true
+
 
 # Start for sequence number (%n)
 # Either a number, or the string "time" which will set it to the current

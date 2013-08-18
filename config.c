@@ -169,8 +169,9 @@ static int conf_set (const char *name, const char *val,
 				 "try \"stdout\" or \"kafka\"", val);
 			return -1;
 		}
-
-	} else if (!strncmp(name, "varnish.arg.", strlen("varnish.arg."))) {
+	} else if (!strcmp(name, "log.data.copy"))
+		conf.datacopy = conf_tof(val);
+	else if (!strncmp(name, "varnish.arg.", strlen("varnish.arg."))) {
 		const char *t = name + strlen("varnish.arg.");
 		int r = 0;
 		if (*t == '-')

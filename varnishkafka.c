@@ -306,6 +306,24 @@ static inline int scratch_write (const struct tag *tag, struct logline *lp,
 	return len;
 }
 
+/**
+ * Same as scratch_write0() but calls match_assign0() directly, thus
+ * not supporting escaping.
+ */
+static inline int scratch_write0 (const struct tag *tag, struct logline *lp,
+				 const char *src, int len) {
+	char *dst;
+
+	if (unlikely((dst = scratch_alloc(tag, lp, len)) == NULL))
+		return -1;
+
+	memcpy(dst, src, len);
+
+	match_assign0(tag, lp, dst, len);
+
+	return len;
+}
+
 
 /**
  * Writes 'src' of 'len' bytes to scratch buffer, escaping
@@ -444,7 +462,10 @@ static void match_assign (const struct tag *tag, struct logline *lp,
 		scratch_write_escaped(tag, lp, ptr, len);
 
 	} else {
-		match_assign0(tag, lp, ptr, len);
+		if (conf.datacopy) /* copy volatile data */
+			scratch_write0(tag, lp, ptr, len);
+		else  /* point to persistent data */
+			match_assign0(tag, lp, ptr, len);
 	}
 }
 
