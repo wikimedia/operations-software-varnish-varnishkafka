@@ -114,7 +114,7 @@ sequence.number = time
 #
 
 # varnishkafka log level (1 = emergencies .. 7 = debug)
-log.level = 7
+log.level = 6
 
 # specify log output (multiples allowed)
 log.stderr = true
