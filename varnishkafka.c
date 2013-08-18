@@ -1205,7 +1205,7 @@ static void render_match_json (struct logline *lp) {
 	yajl_gen g;
 	int      i;
 	const unsigned char *buf;
-	size_t   len;
+	size_t   buflen;
 
 	g = yajl_gen_alloc(NULL);
 	yajl_gen_map_open(g);
@@ -1250,10 +1250,10 @@ static void render_match_json (struct logline *lp) {
 
 	yajl_gen_map_close(g);
 
-	yajl_gen_get_buf(g, &buf, &len);
+	yajl_gen_get_buf(g, &buf, &buflen);
 
 	/* Pass rendered log line to outputter function */
-	outfunc((const char *)buf, len);
+	outfunc((const char *)buf, buflen);
 
 	yajl_gen_clear(g);
 	yajl_gen_free(g);
