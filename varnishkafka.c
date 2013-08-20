@@ -51,6 +51,7 @@
 
 #include <yajl/yajl_common.h>
 #include <yajl/yajl_gen.h>
+#include <yajl/yajl_version.h>
 
 #include "varnishkafka.h"
 #include "base64.h"
@@ -1205,9 +1206,17 @@ static void render_match_json (struct logline *lp) {
 	yajl_gen g;
 	int      i;
 	const unsigned char *buf;
+#if YAJL_MAJOR < 2
+	unsigned int buflen;
+#else
 	size_t   buflen;
+#endif
 
+#if YAJL_MAJOR < 2
+	g = yajl_gen_alloc(NULL, NULL);
+#else
 	g = yajl_gen_alloc(NULL);
+#endif
 	yajl_gen_map_open(g);
 
 	/* Render each formatter in order. */
