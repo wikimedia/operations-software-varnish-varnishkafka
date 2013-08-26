@@ -1547,7 +1547,7 @@ int main (int argc, char **argv) {
 	conf.log_level = 6;
 	conf.log_to    = VK_LOG_STDERR;
 	conf.daemonize = 1;
-
+	conf.datacopy  = 1;
 	rd_kafka_defaultconf_set(&conf.rk_conf);
 	conf.rk_conf.clientid              = "varnishkafka";
 	conf.rk_conf.error_cb              = kafka_error_cb;
