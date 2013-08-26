@@ -210,6 +210,7 @@ static int tag_add (struct fmt *fmt,
 		    int col,
 		    int (*parser) (const struct tag *tag, struct logline *lp,
 				   const char *ptr, int len),
+		    int tag_flags,
 		    char *errstr, size_t errstr_size) {
 	struct tag *tag;
 
@@ -224,9 +225,10 @@ static int tag_add (struct fmt *fmt,
 
 	tag->spec   = spec;
 	tag->tag    = tagid;
-	tag->col   = col;
+	tag->col    = col;
 	tag->fmt    = fmt;
 	tag->parser = parser;
+	tag->flags  = tag_flags;
 
 	if (var) {
 		if (varlen == -1)
@@ -600,8 +602,12 @@ static int parse_t (const struct tag *tag, struct logline *lp,
 	struct tm tm;
 	char *dst;
 	const char *timefmt = "[%d/%b/%Y:%T %z]";
-	const int timelen = sizeof("[20/AbrMnth/2013:00:00:00 +0200]");
+	const int timelen   = 64;
 	int tlen;
+
+	/* Use config-supplied time formatting */
+	if (tag->var)
+		timefmt = tag->var;
 
 	if (tag->tag == SLT_TxHeader) {
 		if (unlikely(!strptime(strndupa(ptr, len),
@@ -616,7 +622,12 @@ static int parse_t (const struct tag *tag, struct logline *lp,
 	if (unlikely(!(dst = scratch_alloc(tag, lp, timelen))))
 		return -1;
 
+	/* Format time string */
 	tlen = strftime(dst, timelen, timefmt, &tm);
+
+	/* Redeem unused space */
+	if (likely(tlen < timelen))
+		scratch_rewind(lp, timelen-tlen);
 
 	match_assign(tag, lp, dst, tlen);
 
@@ -785,6 +796,8 @@ static int format_parse (const char *format_orig,
 			int (*parser) (const struct tag *tag,
 				       struct logline *lp,
 				       const char *ptr, int len);
+			/* Optional tag->flags */
+			int tag_flags;
 		} f[3+1]; /* increase size when necessary (max used size + 1) */
 		
 		/* Default string if no matching tag was found or all
@@ -831,9 +844,11 @@ static int format_parse (const char *format_orig,
 			} },
 		['t'] = { {
 				{ VSL_S_CLIENT, SLT_ReqEnd,
-				  parser: parse_t, col: 3 },
+				  parser: parse_t, col: 3,
+				  tag_flags: TAG_F_NOVARMATCH },
 				{ VSL_S_BACKEND, SLT_RxHeader,
-				  var: "date", parser: parse_t },
+				  var: "date", parser: parse_t,
+				  tag_flags: TAG_F_NOVARMATCH },
 			} },
 		['U'] = { {
 				{ VSL_S_CLIENT, SLT_RxURL, parser: parse_U },
@@ -1073,6 +1088,7 @@ static int format_parse (const char *format_orig,
 				    var ? varlen : -1,
 				    map[(int)*s].f[i].col,
 				    map[(int)*s].f[i].parser,
+				    map[(int)*s].f[i].tag_flags,
 				    errstr, errstr_size) == -1)
 				return -1;
 		}
@@ -1374,7 +1390,7 @@ static int tag_match (struct logline *lp, int spec, enum VSL_tag_e tagid,
 		if (!(tag->spec & spec))
 			continue;
 
-		if (tag->var) {
+		if (tag->var && !(tag->flags & TAG_F_NOVARMATCH)) {
 			const char *t;
 			
 			/* Variable match ("Varname: value") */

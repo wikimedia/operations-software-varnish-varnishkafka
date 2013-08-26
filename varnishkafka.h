@@ -85,6 +85,8 @@ struct tag {
 	int  (*parser) (const struct tag *tag, struct logline *lp,
 			const char *ptr, int len);
 	int    col;
+	int    flags;
+#define TAG_F_NOVARMATCH  0x1  /* Dont attempt to match tag->var to input */
 };
 
 /**

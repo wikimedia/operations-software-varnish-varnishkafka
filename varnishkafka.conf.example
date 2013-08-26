@@ -52,13 +52,20 @@
 #                 backslashed notations (\t\n\r\v\f\"\ ).             #
 #        num    - for typed formatters, such as JSON, try to encode   #
 #                 the value as a number.                              #
-#
+#                                                                     #
 #                                                                     #
 #    This syntax can be combined with %{VAR}X.                        #
 #    Example: %{User-Agent?Mozilla!escape}i                           #
 #             %{?nouser}u                                             #
 #             %{!escape}q                                             #
-#             %{@host}l
+#             %{@host}l                                               #
+#                                                                     #
+#                                                                     #
+#                                                                     #
+#  Additional formatter specials:                                     #
+#    %{<strftime-format>}t - format timestamp according to supplied   #
+#                            strftime(3) compatible format string.    #
+#                                                                     #
 #                                                                     #
 #                                                                     #
 #  Non %-prefixed strings are copied verbatim to the                  #
