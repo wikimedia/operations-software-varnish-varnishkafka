@@ -86,6 +86,17 @@ format = %l        %n        %t        %{Varnish:time_firstbyte}x        %h     
 
 
 
+# Optional secondary formatting.
+#   'output = kafka':  The rendered 'format.key' will be provided as the
+#                      Kafka message Key
+#   'output = string': Print string to stdout.
+# Supports the same formating and type as 'format' and 'format.type'.
+#
+format.key.type = string
+format.key = %{%s}t
+
+
+
 # Where to output varnish log lines:
 #  kafka  - (default) send to kafka broker
 #  stdout - just print to stdout (behave like varnishncsa)

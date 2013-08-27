@@ -53,18 +53,28 @@ struct match {
 	int         len;
 };
 
+
+/* Format configurations */
+#define FMT_CONF_MAIN    0  /* Main format */
+#define FMT_CONF_KEY     1  /* Kafka key format */
+#define FMT_CONF_NUM     2
+
 /**
  * Currently parsed logline(s)
  */
 struct logline {
-	/* Match state */
-	struct match *match;
+	/* Per fmt_conf logline matches */
+	struct match *match[FMT_CONF_NUM];
 
 	/* Tags seen (for -m regexp) */
 	uint64_t tags_seen;
 
 	/* Sequence number */
 	uint64_t seq;
+
+	/* Rendered FMT_CONF_KEY for use in _MAIN output func */
+	char    *key;
+	size_t   key_len;
 
 	/* Scratch pad */
 	int      sof;
@@ -78,6 +88,7 @@ struct logline {
 struct tag {
 	struct tag *next;
 	struct fmt *fmt;
+	int    fid;    /* conf.fconf index */
 	int    spec;
 	int    tag;
 	char  *var;
@@ -109,6 +120,21 @@ struct fmt {
 };
 
 
+typedef enum {
+	VK_ENC_STRING,
+	VK_ENC_JSON,
+} fmt_enc_t;
+
+struct fmt_conf {
+	/* Array of tags in output order. */
+	struct fmt *fmt;
+	int         fmt_cnt;
+	int         fmt_size;
+
+	int         fid;  /* conf.fconf index */
+	fmt_enc_t   encoding;
+};
+
 
 /**
  * varnishkafka config & state struct
@@ -123,21 +149,16 @@ struct conf {
 	/* Sparsely populated with desired tags */
 	struct tag **tag;
 
-	/* Array of tags in output order. */
-	struct fmt *fmt;
-	int         fmt_cnt;
-	int         fmt_size;
+	/* Format configurations */
+	struct fmt_conf fconf[FMT_CONF_NUM];
+	int             fconf_cnt;
 
 	uint64_t    sequence_number;
 
 	int         datacopy;
-	enum {
-		VK_FORMAT_STRING,
-		VK_FORMAT_JSON,
-		VK_FORMAT_PROTOBUF,
-		VK_FORMAT_AVRO,
-	} format_type;
-	
+	fmt_enc_t   fmt_enc;
+	int         total_fmt_cnt;
+
 	/* Kafka config */
 	int         partition;
 	char       *topic;
@@ -150,7 +171,7 @@ struct conf {
 #define VK_LOG_STDERR 0x1
 #define VK_LOG_SYSLOG 0x2
 
-	char       *format;
+	char       *format[FMT_CONF_NUM]; /* Configured format string(s) */
 	int         daemonize;
 
 	rd_kafka_conf_t       rk_conf;
@@ -174,7 +195,11 @@ void vk_log0 (const char *func, const char *file, int line,
 #define _DBG(fmt...) vk_log("DEBUG", LOG_DEBUG, fmt)
 
 
-void out_kafka (const char *buf, size_t len);
-void out_stdout (const char *buf, size_t len);
-void out_null (const char *buf, size_t len);
-extern void (*outfunc) (const char *buf, size_t len);
+void out_kafka (struct fmt_conf *fconf, struct logline *lp,
+		const char *buf, size_t len);
+void out_stdout (struct fmt_conf *fconf, struct logline *lp,
+		 const char *buf, size_t len);
+void out_null (struct fmt_conf *fconf, struct logline *lp,
+	       const char *buf, size_t len);
+extern void (*outfunc) (struct fmt_conf *fconf, struct logline *lp,
+			const char *buf, size_t len);

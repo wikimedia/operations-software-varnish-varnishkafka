@@ -72,6 +72,16 @@ static int conf_tof (const char *val) {
 }
 
 
+static fmt_enc_t encoding_parse (const char *val) {
+	if (!strcasecmp(val, "string"))
+		return VK_ENC_STRING;
+	else if (!strcasecmp(val, "json"))
+		return VK_ENC_JSON;
+	else
+		return -1;
+}
+
+
 /**
  * Set a single configuration property 'name' using value 'val'.
  * Returns 0 on success, and -1 on error in which case 'errstr' will
@@ -122,19 +132,21 @@ static int conf_set (const char *name, const char *val,
 	else if (!strcmp(name, "partition"))
 		conf.partition = atoi(val);
 	else if (!strcmp(name, "format"))
-		conf.format = strdup(val);
+		conf.format[FMT_CONF_MAIN] = strdup(val);
 	else if (!strcmp(name, "format.type")) {
-		if (!strcmp(val, "string"))
-			conf.format_type = VK_FORMAT_STRING;
-		else if (!strcmp(val, "json"))
-			conf.format_type = VK_FORMAT_JSON;
-		else if (!strcmp(val, "protobuf"))
-			conf.format_type = VK_FORMAT_PROTOBUF;
-		else if (!strcmp(val, "avro"))
-			conf.format_type = VK_FORMAT_AVRO;
-		else {
+		if ((conf.fconf[FMT_CONF_MAIN].encoding =
+		     encoding_parse(val)) == -1) {
 			snprintf(errstr, errstr_size,
 				 "Unknown format.type value \"%s\"", val);
+			return -1;
+		}
+	} else if (!strcmp(name, "format.key"))
+		conf.format[FMT_CONF_KEY] = strdup(val);
+	else if (!strcmp(name, "format.key.type")) {
+		if ((conf.fconf[FMT_CONF_KEY].encoding =
+		     encoding_parse(val)) == -1) {
+			snprintf(errstr, errstr_size,
+				 "Unknown format.key.type value \"%s\"", val);
 			return -1;
 		}
 	} else if (!strcmp(name, "log.level"))
