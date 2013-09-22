@@ -37,7 +37,7 @@ to operate as a system daemon.
 Please see the configuration file example,
 *varnishkafka.conf.example*, for a full description of configuration properties.
 
-The standard Varnish VSL command line arguments are supposed, both through
+The standard Varnish VSL command line arguments are supported, both through
 the command line and configuration file.
 
 # License
