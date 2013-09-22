@@ -122,9 +122,6 @@ log.data.copy = true
 # Defaults to 0.
 sequence.number = time
 
-# FUTURE: read last sequence number from file to allow restarts
-#sequence.file = /var/spool/varnishkafka.seq
-
 
 #
 # varnishkafka log messages configuration
@@ -142,11 +139,6 @@ log.syslog = true
 
 # daemonize varnishkafka (boolean)
 daemonize = false
-
-
-# vaktl socket path
-# FIXME: not implemented
-#vaktl.path = /var/run/varnishkafka.vaktl
 
 
 #######################################################################
@@ -178,7 +170,7 @@ varnish.arg.m = RxRequest:^(?!PURGE$)
 #                                                                     #
 # For the full range of Kafka handle and topic configuration          #
 # properties, see:                                                    #
-#  https://github.com/edenhill/librdkafka/blob/0.8-wip/rdkafka.h      #
+#  https://github.com/edenhill/librdkafka/blob/master/rdkafka.h       #
 #                                                                     #
 # And the Apache Kafka configuration reference:                       #
 #  http://kafka.apache.org/08/configuration.html                      #
@@ -186,7 +178,7 @@ varnish.arg.m = RxRequest:^(?!PURGE$)
 #######################################################################
 
 # Initial list of kafka brokers
-metadata.broker.list = localhost:9091
+metadata.broker.list = localhost:9092
 
 # Maximum number of messages allowed on the local producer queue
 queue.buffering.max.messages = 1000000
