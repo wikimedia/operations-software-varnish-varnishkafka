@@ -1052,8 +1052,12 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 			return -1;
 		}
 
-		if (!def)
-			def = map[(int)*s].def;
+		if (!def) {
+			if (type == FMT_TYPE_NUMBER)
+				def = "0";
+			else
+				def = map[(int)*s].def;
+		}
 
 		/* Add formatter to ordered list of formatters */
 		if ((fmtid = format_add(fconf, *s, var, varlen,
