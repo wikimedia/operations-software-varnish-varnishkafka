@@ -1613,14 +1613,15 @@ int main (int argc, char **argv) {
 	conf.log_to    = VK_LOG_STDERR;
 	conf.daemonize = 1;
 	conf.datacopy  = 1;
-	rd_kafka_defaultconf_set(&conf.rk_conf);
-	conf.rk_conf.clientid              = "varnishkafka";
-	conf.rk_conf.error_cb              = kafka_error_cb;
-	conf.rk_conf.producer.dr_cb        = kafka_dr_cb;
-	conf.rk_conf.producer.max_messages = 1000000;
+	conf.rk_conf = rd_kafka_conf_new();
+	rd_kafka_conf_set(conf.rk_conf, "client.id", "varnishkafka", NULL, 0);
+	rd_kafka_conf_set_error_cb(conf.rk_conf, kafka_error_cb);
+	rd_kafka_conf_set_dr_cb(conf.rk_conf, kafka_dr_cb);
+	rd_kafka_conf_set(conf.rk_conf, "queue.buffering.max.messages",
+			  "1000000", NULL, 0);
 
-	rd_kafka_topic_defaultconf_set(&conf.topic_conf);
-	conf.topic_conf.required_acks      = 1;
+	conf.topic_conf = rd_kafka_topic_conf_new();
+	rd_kafka_topic_conf_set(conf.topic_conf, "required_acks", "1", NULL, 0);
 
 	for (i = 0 ; i < FMT_CONF_NUM ; i++)
 		conf.fconf[i].fid = i;
@@ -1737,7 +1738,7 @@ int main (int argc, char **argv) {
 	/* Kafka outputter */
 	if (outfunc == out_kafka) {
 		/* Create Kafka handle */
-		if (!(rk = rd_kafka_new(RD_KAFKA_PRODUCER, &conf.rk_conf,
+		if (!(rk = rd_kafka_new(RD_KAFKA_PRODUCER, conf.rk_conf,
 					errstr, sizeof(errstr)))) {
 			vk_log("KAFKANEW", LOG_ERR,
 			       "Failed to create kafka handle: %s", errstr);
@@ -1748,7 +1749,7 @@ int main (int argc, char **argv) {
 
 		/* Create Kafka topic handle */
 		if (!(rkt = rd_kafka_topic_new(rk, conf.topic,
-					       &conf.topic_conf))) {
+					       conf.topic_conf))) {
 			vk_log("KAFKANEW", LOG_ERR,
 			       "Invalid topic or configuration: %s: %s",
 			       conf.topic, strerror(errno));

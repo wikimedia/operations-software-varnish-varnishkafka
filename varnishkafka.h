@@ -174,8 +174,8 @@ struct conf {
 	char       *format[FMT_CONF_NUM]; /* Configured format string(s) */
 	int         daemonize;
 
-	rd_kafka_conf_t       rk_conf;
-	rd_kafka_topic_conf_t topic_conf;
+	rd_kafka_conf_t       *rk_conf;
+	rd_kafka_topic_conf_t *topic_conf;
 };
 
 extern struct conf conf;

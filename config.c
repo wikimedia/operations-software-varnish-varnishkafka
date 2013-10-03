@@ -97,7 +97,7 @@ static int conf_set (const char *name, const char *val,
 	if (!strncmp(name, "topic.", strlen("topic."))) {
 		/* Kafka topic configuration. */
 		
-		res = rd_kafka_topic_conf_set(&conf.topic_conf,
+		res = rd_kafka_topic_conf_set(conf.topic_conf,
 					      name+strlen("topic."), val,
 					      errstr, errstr_size);
 		if (res == RD_KAFKA_CONF_INVALID)
@@ -109,7 +109,7 @@ static int conf_set (const char *name, const char *val,
 	}
 
 	/* Kafka main configuration */
-	res = rd_kafka_conf_set(&conf.rk_conf, name, val, errstr, errstr_size);
+	res = rd_kafka_conf_set(conf.rk_conf, name, val, errstr, errstr_size);
 	if (res == RD_KAFKA_CONF_INVALID)
 		return -1;
 	else if (res == RD_KAFKA_CONF_OK)
