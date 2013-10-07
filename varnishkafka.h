@@ -30,6 +30,8 @@
 
 #pragma once
 
+#include <sys/queue.h>
+
 #ifndef likely
 #define likely(x)   __builtin_expect((x),1)
 #endif
@@ -63,6 +65,11 @@ struct match {
  * Currently parsed logline(s)
  */
 struct logline {
+	LIST_ENTRY(logline)  link;
+
+	/* Log id */
+	unsigned int  id;
+
 	/* Per fmt_conf logline matches */
 	struct match *match[FMT_CONF_NUM];
 
@@ -71,6 +78,9 @@ struct logline {
 
 	/* Sequence number */
 	uint64_t seq;
+
+	/* Last use of this logline */
+	time_t   t_last;
 
 	/* Rendered FMT_CONF_KEY for use in _MAIN output func */
 	char    *key;
@@ -158,6 +168,8 @@ struct conf {
 	int         datacopy;
 	fmt_enc_t   fmt_enc;
 	int         total_fmt_cnt;
+	int         loglines_hsize;  /* Log id hash size */
+	int         loglines_hmax;   /* Max log ids per hash bucket */
 
 	/* Kafka config */
 	int         partition;

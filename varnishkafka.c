@@ -68,18 +68,24 @@ struct VSM_data *vd;
 const char *conf_file_path = VARNISHKAFKA_CONF_PATH;
 
 
-/**
- * Currently parsed logline(s)
- */
-static struct logline **loglines;
-static int              logline_cnt;
-
-
-
 static const char *fmt_conf_names[] = {
 	[FMT_CONF_MAIN] = "Main",
 	[FMT_CONF_KEY]  = "Key"
 };
+
+
+/**
+ * Logline cache
+ */
+static struct {
+	LIST_HEAD(, logline) lps;    /* Current loglines in bucket */
+	int                  cnt;    /* Current number of loglines in bucket */
+	uint64_t             hit;    /* Cache hits */
+	uint64_t             miss;   /* Cache misses */
+	uint64_t             purge;  /* Cache entry purges (bucket full) */
+} *loglines;
+
+
 
 /**
  * All constant strings in the format are placed in 'const_string' which
@@ -1338,6 +1344,20 @@ static void render_match (struct logline *lp, uint64_t seq) {
 }
 
 
+
+/**
+ * Initialize log line lookup hash
+ */
+static void loglines_init (void) {
+	loglines = calloc(sizeof(*loglines), conf.loglines_hsize);
+}
+
+/**
+ * Returns the hash key (bucket) for a given log id
+ */
+#define logline_hkey(id) ((id) % conf.loglines_hsize)
+
+
 /**
  * Resets the given logline and makes it ready for accumulating a new request.
  */
@@ -1359,6 +1379,24 @@ static void logline_reset (struct logline *lp) {
 	lp->seq       = 0;
 	lp->sof       = 0;
 	lp->tags_seen = 0;
+	lp->t_last    = time(NULL);
+}
+
+
+/**
+ * Free up all loglines.
+ */
+static void loglines_term (void) {
+	unsigned int hkey;
+	for (hkey = 0 ; hkey < conf.loglines_hsize ; hkey++) {
+		struct logline *lp;
+		while ((lp = LIST_FIRST(&loglines[hkey].lps))) {
+			logline_reset(lp);
+			LIST_REMOVE(lp, link);
+			free(lp);
+		}
+	}
+	free(loglines);
 }
 
 
@@ -1366,47 +1404,47 @@ static void logline_reset (struct logline *lp) {
  * Returns a logline.
  */
 static inline struct logline *logline_get (unsigned int id) {
-	struct logline *lp;
+	struct logline *lp, *oldest = NULL;
+	unsigned int hkey = logline_hkey(id);
+	int i;
+	char *ptr;
 
-	if (unlikely(id >= logline_cnt)) {
-		int newcnt = id + 64;
-
-		_DBG("Reallocate logline array "
-		     "from %i to %i entries (new id %i)",
-		     logline_cnt, newcnt, id);
-		     
-		loglines = realloc(loglines, sizeof(*loglines) * newcnt);
-		if (!loglines) {
-			vk_log("MEM", LOG_CRIT,
-			       "Unable to allocate new logline "
-			       "array of size %lu bytes (%i entries): %s",
-			       sizeof(*loglines) * newcnt, newcnt,
-			       strerror(errno));
-			conf.run = 0;
-			conf.pret = -1;
-			return NULL;
-		}
-
-		memset(loglines + logline_cnt, 0,
-		       sizeof(*loglines) * (newcnt - logline_cnt));
-		
-		logline_cnt = newcnt;
+	LIST_FOREACH(lp, &loglines[hkey].lps, link) {
+		if (lp->id == id) {
+			/* Cache hit: return existing logline */
+			loglines[hkey].hit++;
+			return lp;
+		} else if (loglines[hkey].cnt > conf.loglines_hmax &&
+			   lp->tags_seen &&
+			   (!oldest || lp->t_last < oldest->t_last))
+			oldest = lp;
 	}
 
-	if (unlikely(!(lp = loglines[id]))) {
-		int i;
-		char *ptr;
+	/* Cache miss */
+	loglines[hkey].miss++;
 
-		/* Allocate a new logline if necessary. */
-		lp = loglines[id] = calloc(1, sizeof(*lp) + 
-					   (conf.total_fmt_cnt *
-					    sizeof(*lp->match[0])));
-		ptr = (char *)(lp+1);
-		for (i = 0 ; i < conf.fconf_cnt ; i++) {
-			lp->match[i] = (struct match *)ptr;
-			ptr += conf.fconf[i].fmt_cnt * sizeof(*lp->match[i]);
-		}
+	if (oldest) {
+		/* Remove oldest entry.
+		 * We will not loose a log record here since this only
+		 * matches when 'tags_seen' is zero. */
+		LIST_REMOVE(oldest, link);
+		loglines[hkey].cnt--;
+		loglines[hkey].purge++;
+		free(oldest);
 	}
+
+	/* Allocate and set up new logline */
+	lp = calloc(1, sizeof(*lp) +
+		    (conf.total_fmt_cnt * sizeof(*lp->match[0])));
+	lp->id = id;
+	ptr = (char *)(lp+1);
+	for (i = 0 ; i < conf.fconf_cnt ; i++) {
+		lp->match[i] = (struct match *)ptr;
+		ptr += conf.fconf[i].fmt_cnt * sizeof(*lp->match[i]);
+	}
+
+	LIST_INSERT_HEAD(&loglines[hkey].lps, lp, link);
+	loglines[hkey].cnt++;
 
 	return lp;
 }
@@ -1509,7 +1547,7 @@ static int parse_tag (void *priv, enum VSL_tag_e tag, unsigned id,
 	if (unlikely(!(lp = logline_get(id))))
 		return -1;
 
-	/* Update bitfield of seen tags */
+	/* Update bitfield of seen tags (-m regexp) */
 	lp->tags_seen |= bitmap;
 
 	/* Accumulate matched tag content */
@@ -1613,6 +1651,8 @@ int main (int argc, char **argv) {
 	conf.log_to    = VK_LOG_STDERR;
 	conf.daemonize = 1;
 	conf.datacopy  = 1;
+	conf.loglines_hsize = 5000;
+	conf.loglines_hmax  = 5;
 	conf.rk_conf = rd_kafka_conf_new();
 	rd_kafka_conf_set(conf.rk_conf, "client.id", "varnishkafka", NULL, 0);
 	rd_kafka_conf_set_error_cb(conf.rk_conf, kafka_error_cb);
@@ -1725,6 +1765,9 @@ int main (int argc, char **argv) {
 		exit(1);
 	}
 
+	/* Prepare logline cache */
+	loglines_init();
+
 	/* Daemonize if desired */
 	if (conf.daemonize) {
 		if (daemon(0, 0) == -1) {
@@ -1783,6 +1826,8 @@ int main (int argc, char **argv) {
 			;
 
 	}
+
+	loglines_term();
 
 	VSM_Close(vd);
 	exit(0);

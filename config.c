@@ -183,6 +183,10 @@ static int conf_set (const char *name, const char *val,
 		}
 	} else if (!strcmp(name, "log.data.copy"))
 		conf.datacopy = conf_tof(val);
+	else if (!strcmp(name, "log.hash.size"))
+		conf.loglines_hsize = atoi(val);
+	else if (!strcmp(name, "log.hash.max"))
+		conf.loglines_hmax = atoi(val);
 	else if (!strncmp(name, "varnish.arg.", strlen("varnish.arg."))) {
 		const char *t = name + strlen("varnish.arg.");
 		int r = 0;

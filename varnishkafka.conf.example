@@ -116,6 +116,26 @@ output = kafka
 log.data.copy = true
 
 
+# TUNING
+# Logline cache hash tuning
+# 'log.hash.size * log.hash.max' dictates the maximum number of cached logline
+# entries in memory.
+#
+
+# Number of hash buckets (keyed by log id).
+# Higher number yields more performance at the expense of memory.
+# Set this to avg_requests_per_second / 5.
+# Defaults to 5000
+#log.hash.size = 5000
+
+# Maximum number of loglines per hash bucket
+# Higher number yields less memory consumption at the expense of performance.
+# Set this to avg_requests_per_second / log.hash.size.
+# Defaults to 5
+#log.hash.max = 5
+
+
+
 # Start for sequence number (%n)
 # Either a number, or the string "time" which will set it to the current
 # unix time in seconds multiplied by 1,000,000.
