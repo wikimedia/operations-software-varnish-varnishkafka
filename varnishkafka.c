@@ -1170,8 +1170,9 @@ void out_kafka (struct fmt_conf *fconf, struct logline *lp,
 			     (void *)buf, len,
 			     lp->key, lp->key_len, NULL) == -1) {
 		vk_log("PRODUCE", LOG_WARNING,
-		       "Failed to produce kafka message: %s",
-		       strerror(errno));
+		       "Failed to produce Kafka message (seq %"PRIu64"): %s "
+		       "(%i messages in outq)",
+		       lp->seq, strerror(errno), rd_kafka_outq_len(rk));
 	}
 
 	rd_kafka_poll(rk, 0);
