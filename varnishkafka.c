@@ -274,7 +274,7 @@ static void match_assign (const struct tag *tag, struct logline *lp,
  * Returns true if 'ptr' is within 'lp's scratch pad, else false.
  */
 static inline int is_scratch_ptr (const struct logline *lp, const char *ptr) {
-	return (lp->scratch <= ptr && ptr < lp->scratch + sizeof(lp->scratch));
+	return (lp->scratch <= ptr && ptr < lp->scratch + conf.scratch_size);
 }
 
 /**
@@ -294,11 +294,11 @@ static inline char *scratch_alloc (const struct tag *tag, struct logline *lp,
 				   int len) {
 	char *ptr;
 
-	if (lp->sof + len > sizeof(lp->scratch)) {
+	if (lp->sof + len > conf.scratch_size) {
 		vk_log("WARNING", LOG_WARNING,
 		       "scratch pad is too small (%zd bytes), "
-		       "need %i bytes or more",
-		       sizeof(lp->scratch), lp->sof + len);
+		       "need %i bytes or more: increase log.line.scratch.size",
+		       conf.scratch_size, lp->sof + len);
 		return NULL;
 	}
 
@@ -1434,10 +1434,10 @@ static inline struct logline *logline_get (unsigned int id) {
 	}
 
 	/* Allocate and set up new logline */
-	lp = calloc(1, sizeof(*lp) +
+	lp = calloc(1, sizeof(*lp) + conf.scratch_size +
 		    (conf.total_fmt_cnt * sizeof(*lp->match[0])));
 	lp->id = id;
-	ptr = (char *)(lp+1);
+	ptr = (char *)(lp+1) + conf.scratch_size;
 	for (i = 0 ; i < conf.fconf_cnt ; i++) {
 		lp->match[i] = (struct match *)ptr;
 		ptr += conf.fconf[i].fmt_cnt * sizeof(*lp->match[i]);
@@ -1653,6 +1653,7 @@ int main (int argc, char **argv) {
 	conf.datacopy  = 1;
 	conf.loglines_hsize = 5000;
 	conf.loglines_hmax  = 5;
+	conf.scratch_size   = 4096;
 	conf.rk_conf = rd_kafka_conf_new();
 	rd_kafka_conf_set(conf.rk_conf, "client.id", "varnishkafka", NULL, 0);
 	rd_kafka_conf_set_error_cb(conf.rk_conf, kafka_error_cb);

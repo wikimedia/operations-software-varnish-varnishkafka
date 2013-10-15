@@ -88,7 +88,8 @@ struct logline {
 
 	/* Scratch pad */
 	int      sof;
-	char     scratch[2048];  /* Must be at end of struct */
+	char     scratch[0];  /* Must be at end of struct.
+			       * Allocated to conf.scratch_size bytes */
 };
 
 
@@ -165,6 +166,7 @@ struct conf {
 
 	uint64_t    sequence_number;
 
+	size_t      scratch_size;    /* Size of scratch buffer */
 	int         datacopy;
 	fmt_enc_t   fmt_enc;
 	int         total_fmt_cnt;
