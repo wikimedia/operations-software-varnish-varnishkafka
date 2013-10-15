@@ -1221,6 +1221,10 @@ static void kafka_dr_cb (rd_kafka_t *rk,
 			 int error_code,
 			 void *opaque, void *msg_opaque) {
 	_DBG("Kafka delivery report: error=%i, size=%zd", error_code, len);
+	if (unlikely(error_code && conf.log_kafka_msg_error))
+		vk_log("KAFKADR", LOG_NOTICE,
+		       "Kafka message delivery error: %s",
+		       rd_kafka_err2str(error_code));
 }
 
 
@@ -1654,6 +1658,7 @@ int main (int argc, char **argv) {
 	conf.loglines_hsize = 5000;
 	conf.loglines_hmax  = 5;
 	conf.scratch_size   = 4096;
+	conf.log_kafka_msg_error = 1;
 	conf.rk_conf = rd_kafka_conf_new();
 	rd_kafka_conf_set(conf.rk_conf, "client.id", "varnishkafka", NULL, 0);
 	rd_kafka_conf_set_error_cb(conf.rk_conf, kafka_error_cb);

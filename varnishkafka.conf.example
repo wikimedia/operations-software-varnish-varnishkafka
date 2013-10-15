@@ -160,6 +160,8 @@ log.level = 6
 log.stderr = true
 log.syslog = true
 
+# Kafka: log message delivery failures (requires required.acks > 0)
+log.kafka.msg.error = true
 
 
 # daemonize varnishkafka (boolean)
@@ -206,6 +208,7 @@ varnish.arg.m = RxRequest:^(?!PURGE$)
 metadata.broker.list = localhost:9092
 
 # Maximum number of messages allowed on the local producer queue
+# Defaults to 1000000
 queue.buffering.max.messages = 1000000
 
 # Maximum number of retries per messageset.

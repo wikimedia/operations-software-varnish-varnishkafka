@@ -185,6 +185,8 @@ struct conf {
 #define VK_LOG_STDERR 0x1
 #define VK_LOG_SYSLOG 0x2
 
+	int         log_kafka_msg_error;  /* Log Kafka message delivery errors*/
+
 	char       *format[FMT_CONF_NUM]; /* Configured format string(s) */
 	int         daemonize;
 

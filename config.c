@@ -161,7 +161,9 @@ static int conf_set (const char *name, const char *val,
 			conf.log_to |= VK_LOG_SYSLOG;
 		else
 			conf.log_to &= ~VK_LOG_SYSLOG;
-	} else if (!strcmp(name, "daemonize"))
+	} else if (!strcmp(name, "log.kafka.msg.error"))
+		conf.log_kafka_msg_error = conf_tof(val);
+	else if (!strcmp(name, "daemonize"))
 		conf.daemonize = conf_tof(val);
 	else if (!strcmp(name, "sequence.number")) {
 		if (!strcmp(val, "time"))
