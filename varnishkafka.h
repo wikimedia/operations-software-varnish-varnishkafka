@@ -178,12 +178,12 @@ struct conf {
 	char       *topic;
 
 	char       *logname;
-
 	int         log_level;
-
 	int         log_to;
 #define VK_LOG_STDERR 0x1
 #define VK_LOG_SYSLOG 0x2
+	int         log_rate;        /* Maximum log rate per minute. */
+	int         log_rate_period; /* Log rate limiting period */
 
 	int         log_kafka_msg_error;  /* Log Kafka message delivery errors*/
 

@@ -1145,9 +1145,68 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 
 
 
+/**
+ * Simple rate limiter used to limit the amount of error syslogs.
+ * Controlled through the "log.rate.max" and "log.rate.period" properties.
+ */
+typedef enum {
+	RL_KAFKA_PRODUCE_ERR,
+	RL_KAFKA_ERROR_CB,
+	RL_KAFKA_DR_ERR,
+	RL_NUM,
+} rl_type_t;
 
 
+static struct rate_limiter {
+	uint64_t total;        /* Total number of events in current period */
+	uint64_t suppressed;   /* Suppressed events in current period */
+	const char *name;      /* Rate limiter log message summary */
+	const char *fac;       /* Log facility */
+} rate_limiters[RL_NUM] = {
+	[RL_KAFKA_PRODUCE_ERR] = { name: "Kafka produce errors",
+				   fac: "PRODUCE" },
+	[RL_KAFKA_ERROR_CB] = { name: "Kafka errors", fac: "KAFKAERR" },
+	[RL_KAFKA_DR_ERR] = { name: "Kafka message delivery failures",
+			      fac: "KAFKADR" }
+};
 
+static time_t rate_limiter_t_curr; /* Current period */
+
+
+/**
+ * Roll over all rate limiters to a new period.
+ */
+static void rate_limiters_rollover (time_t now) {
+	int i;
+
+	for (i = 0 ; i < RL_NUM ; i++) {
+		struct rate_limiter *rl = &rate_limiters[i];
+		if (rl->suppressed > 0)
+			vk_log(rl->fac, LOG_WARNING,
+			       "Suppressed %"PRIu64" (out of %"PRIu64") %s",
+			       rl->suppressed, rl->total, rl->name);
+		rl->total = 0;
+		rl->suppressed = 0;
+	}
+
+	rate_limiter_t_curr = now;
+}
+
+
+/**
+ * Rate limiter.
+ * Returns 1 if the threshold has been reached (DROP), or 0 if not (PASS)
+ */
+static inline int rate_limit (rl_type_t type) {
+	struct rate_limiter *rl = &rate_limiters[type];
+
+	if (++rl->total > conf.log_rate) {
+		rl->suppressed++;
+		return 1;
+	}
+
+	return 0;
+}
 
 
 /**
@@ -1169,10 +1228,12 @@ void out_kafka (struct fmt_conf *fconf, struct logline *lp,
 	if (rd_kafka_produce(rkt, conf.partition, RD_KAFKA_MSG_F_COPY,
 			     (void *)buf, len,
 			     lp->key, lp->key_len, NULL) == -1) {
-		vk_log("PRODUCE", LOG_WARNING,
-		       "Failed to produce Kafka message (seq %"PRIu64"): %s "
-		       "(%i messages in outq)",
-		       lp->seq, strerror(errno), rd_kafka_outq_len(rk));
+
+		if (!rate_limit(RL_KAFKA_PRODUCE_ERR))
+			vk_log("PRODUCE", LOG_WARNING,
+			       "Failed to produce Kafka message "
+			       "(seq %"PRIu64"): %s (%i messages in outq)",
+			       lp->seq, strerror(errno), rd_kafka_outq_len(rk));
 	}
 
 	rd_kafka_poll(rk, 0);
@@ -1207,7 +1268,9 @@ void (*outfunc) (struct fmt_conf *fconf, struct logline *lp,
  */
 static void kafka_error_cb (rd_kafka_t *rk, int err,
 			    const char *reason, void *opaque) {
-	vk_log("KAFKAERR", LOG_ERR, "Kafka error (%i): %s", err, reason);
+	if (!rate_limit(RL_KAFKA_ERROR_CB))
+		vk_log("KAFKAERR", LOG_ERR,
+		       "Kafka error (%i): %s", err, reason);
 }
 
 
@@ -1222,7 +1285,8 @@ static void kafka_dr_cb (rd_kafka_t *rk,
 			 int error_code,
 			 void *opaque, void *msg_opaque) {
 	_DBG("Kafka delivery report: error=%i, size=%zd", error_code, len);
-	if (unlikely(error_code && conf.log_kafka_msg_error))
+	if (unlikely(error_code && conf.log_kafka_msg_error &&
+		     !rate_limit(RL_KAFKA_DR_ERR)))
 		vk_log("KAFKADR", LOG_NOTICE,
 		       "Kafka message delivery error: %s",
 		       rd_kafka_err2str(error_code));
@@ -1571,6 +1635,10 @@ static int parse_tag (void *priv, enum VSL_tag_e tag, unsigned id,
 	/* clean up */
 	logline_reset(lp);
 
+	/* Reuse fresh timestamp lp->t_last from logline_reset() */
+	if (unlikely(lp->t_last >= rate_limiter_t_curr + conf.log_rate_period))
+		rate_limiters_rollover(lp->t_last);
+
 	return conf.pret;
 }
 
@@ -1654,6 +1722,8 @@ int main (int argc, char **argv) {
 	 */
 	conf.log_level = 6;
 	conf.log_to    = VK_LOG_STDERR;
+	conf.log_rate  = 100;
+	conf.log_rate_period = 60;
 	conf.daemonize = 1;
 	conf.datacopy  = 1;
 	conf.loglines_hsize = 5000;
@@ -1835,6 +1905,8 @@ int main (int argc, char **argv) {
 	}
 
 	loglines_term();
+
+	rate_limiters_rollover(time(NULL));
 
 	VSM_Close(vd);
 	exit(0);

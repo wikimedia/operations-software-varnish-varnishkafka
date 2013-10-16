@@ -160,6 +160,13 @@ log.level = 6
 log.stderr = true
 log.syslog = true
 
+# Maximum number of error logs produced per log.rate.period seconds
+# This setting is applied per error type.
+# log.rate.max defaults to 100
+# log.rate.period defaults to 60
+#log.rate.max = 100
+#log.rate.period = 60
+
 # Kafka: log message delivery failures (requires required.acks > 0)
 log.kafka.msg.error = true
 
