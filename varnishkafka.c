@@ -85,6 +85,44 @@ static struct {
 	uint64_t             purge;  /* Cache entry purges (bucket full) */
 } *loglines;
 
+static int logline_cnt = 0; /* Current number of loglines in memory */
+
+
+/**
+ * Counters
+ */
+static struct {
+	uint64_t tx;               /* Printed/Transmitted lines */
+	uint64_t txerr;            /* Transmit failures */
+	uint64_t kafka_drerr;      /* Kafka: message delivery errors */
+	uint64_t trunc;            /* Truncated tags */
+	uint64_t scratch_toosmall; /* Scratch buffer was too small and
+				    * a temporary buffer was required. */
+	uint64_t scratch_tmpbufs;  /* Number of tmpbufs created */
+} cnt;
+
+static void print_stats (void) {
+	vk_log("\"stats\"", LOG_INFO,
+	       "{ "
+	       "\"tx\":%"PRIu64", "
+	       "\"txerr\":%"PRIu64", "
+	       "\"kafka_drerr\":%"PRIu64", "
+	       "\"trunc\":%"PRIu64", "
+	       "\"scratch_toosmall\":%"PRIu64", "
+	       "\"scratch_tmpbufs\":%"PRIu64", "
+	       "\"lp_curr\":%i, "
+	       "\"seq\":%"PRIu64" "
+	       "}",
+	       cnt.tx,
+	       cnt.txerr,
+	       cnt.kafka_drerr,
+	       cnt.trunc,
+	       cnt.scratch_toosmall,
+	       cnt.scratch_tmpbufs,
+	       logline_cnt,
+	       conf.sequence_number);
+}
+
 
 
 /**
@@ -1228,7 +1266,7 @@ void out_kafka (struct fmt_conf *fconf, struct logline *lp,
 	if (rd_kafka_produce(rkt, conf.partition, RD_KAFKA_MSG_F_COPY,
 			     (void *)buf, len,
 			     lp->key, lp->key_len, NULL) == -1) {
-
+		cnt.txerr++;
 		if (!rate_limit(RL_KAFKA_PRODUCE_ERR))
 			vk_log("PRODUCE", LOG_WARNING,
 			       "Failed to produce Kafka message "
@@ -1285,11 +1323,22 @@ static void kafka_dr_cb (rd_kafka_t *rk,
 			 int error_code,
 			 void *opaque, void *msg_opaque) {
 	_DBG("Kafka delivery report: error=%i, size=%zd", error_code, len);
-	if (unlikely(error_code && conf.log_kafka_msg_error &&
-		     !rate_limit(RL_KAFKA_DR_ERR)))
-		vk_log("KAFKADR", LOG_NOTICE,
-		       "Kafka message delivery error: %s",
-		       rd_kafka_err2str(error_code));
+	if (unlikely(error_code)) {
+		cnt.kafka_drerr++;
+		if (conf.log_kafka_msg_error && !rate_limit(RL_KAFKA_DR_ERR))
+			vk_log("KAFKADR", LOG_NOTICE,
+			       "Kafka message delivery error: %s",
+			       rd_kafka_err2str(error_code));
+	}
+}
+
+/**
+ * Kafka statistics callback.
+ */
+static int kafka_stats_cb (rd_kafka_t *rk, char *json, size_t json_len,
+			    void *opaque) {
+	vk_log("\"kafkastats\"", LOG_INFO, "%.*s", (int)json_len, json);
+	return 0;
 }
 
 
@@ -1319,6 +1368,7 @@ static void render_match_string (struct fmt_conf *fconf, struct logline *lp) {
 	}
 
 	/* Pass rendered log line to outputter function */
+	cnt.tx++;
 	outfunc(fconf, lp, buf, of);
 }
 
@@ -1463,6 +1513,7 @@ static void loglines_term (void) {
 			logline_reset(lp);
 			LIST_REMOVE(lp, link);
 			free(lp);
+			logline_cnt--;
 		}
 	}
 	free(loglines);
@@ -1500,6 +1551,7 @@ static inline struct logline *logline_get (unsigned int id) {
 		loglines[hkey].cnt--;
 		loglines[hkey].purge++;
 		free(oldest);
+		logline_cnt--;
 	}
 
 	/* Allocate and set up new logline */
@@ -1514,6 +1566,7 @@ static inline struct logline *logline_get (unsigned int id) {
 
 	LIST_INSERT_HEAD(&loglines[hkey].lps, lp, link);
 	loglines[hkey].cnt++;
+	logline_cnt++;
 
 	return lp;
 }
@@ -1639,6 +1692,13 @@ static int parse_tag (void *priv, enum VSL_tag_e tag, unsigned id,
 	if (unlikely(lp->t_last >= rate_limiter_t_curr + conf.log_rate_period))
 		rate_limiters_rollover(lp->t_last);
 
+	/* Stats output */
+	if (unlikely(conf.stats_interval &&
+		     lp->t_last >= conf.t_last_stats + conf.stats_interval)) {
+		print_stats();
+		conf.t_last_stats = lp->t_last;
+	}
+
 	return conf.pret;
 }
 
@@ -1649,7 +1709,7 @@ static int parse_tag (void *priv, enum VSL_tag_e tag, unsigned id,
 void vk_log0 (const char *func, const char *file, int line,
 	      const char *facility, int level, const char *fmt, ...) {
 	va_list ap;
-	char buf[512];
+	static char buf[8192];
 
 	if (level > conf.log_level || !conf.log_to)
 		return;
@@ -1729,6 +1789,7 @@ int main (int argc, char **argv) {
 	conf.loglines_hsize = 5000;
 	conf.loglines_hmax  = 5;
 	conf.scratch_size   = 4096;
+	conf.stats_interval = 60;
 	conf.log_kafka_msg_error = 1;
 	conf.rk_conf = rd_kafka_conf_new();
 	rd_kafka_conf_set(conf.rk_conf, "client.id", "varnishkafka", NULL, 0);
@@ -1792,6 +1853,16 @@ int main (int argc, char **argv) {
 	/* Set up syslog */
 	if (conf.log_to & VK_LOG_SYSLOG)
 		openlog("varnishkafka", LOG_PID|LOG_NDELAY, LOG_DAEMON);
+
+	/* Set up statistics gathering in librdkafka, if enabled. */
+	if (conf.stats_interval) {
+		char tmp[30];
+		snprintf(tmp, sizeof(tmp), "%i", conf.stats_interval*1000);
+		rd_kafka_conf_set_stats_cb(conf.rk_conf, kafka_stats_cb);
+		rd_kafka_conf_set(conf.rk_conf, "statistics.interval.ms", tmp,
+				  NULL, 0);
+	}
+
 
 	/* Termination signal handlers */
 	signal(SIGINT, sig_term);
@@ -1905,6 +1976,7 @@ int main (int argc, char **argv) {
 	}
 
 	loglines_term();
+	print_stats();
 
 	rate_limiters_rollover(time(NULL));
 

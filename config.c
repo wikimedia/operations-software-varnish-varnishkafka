@@ -163,6 +163,8 @@ static int conf_set (const char *name, const char *val,
 			conf.log_to &= ~VK_LOG_SYSLOG;
 	} else if (!strcmp(name, "log.kafka.msg.error"))
 		conf.log_kafka_msg_error = conf_tof(val);
+	else if (!strcmp(name, "log.statistics.interval"))
+		conf.stats_interval = atoi(val);
 	else if (!strcmp(name, "log.rate.max"))
 		conf.log_rate = atoi(val);
 	else if (!strcmp(name, "log.rate.period"))

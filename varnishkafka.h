@@ -172,6 +172,8 @@ struct conf {
 	int         total_fmt_cnt;
 	int         loglines_hsize;  /* Log id hash size */
 	int         loglines_hmax;   /* Max log ids per hash bucket */
+	int         stats_interval;  /* Statistics output interval */
+	time_t      t_last_stats;    /* Last stats output */
 
 	/* Kafka config */
 	int         partition;
