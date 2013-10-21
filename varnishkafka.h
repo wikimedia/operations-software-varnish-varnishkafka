@@ -61,6 +61,18 @@ struct match {
 #define FMT_CONF_KEY     1  /* Kafka key format */
 #define FMT_CONF_NUM     2
 
+
+/**
+ * Temporary scratch buffer
+ */
+struct tmpbuf {
+	struct tmpbuf *next;
+	size_t size;
+	int    of;
+	char   buf[0];  /* Must be at end of struct: allocated to '.size' */
+};
+
+
 /**
  * Currently parsed logline(s)
  */
@@ -85,6 +97,9 @@ struct logline {
 	/* Rendered FMT_CONF_KEY for use in _MAIN output func */
 	char    *key;
 	size_t   key_len;
+
+	/* Auxillery buffers (if scratch pad is not sufficient) */
+	struct tmpbuf *tmpbuf;
 
 	/* Scratch pad */
 	int      sof;

@@ -318,7 +318,13 @@ static inline int is_scratch_ptr (const struct logline *lp, const char *ptr) {
 /**
  * Rewinds (deallocates) the last allocation by 'len' bytes.
  */
-static inline void scratch_rewind (struct logline *lp, int len) {
+static inline void scratch_rewind (struct logline *lp, const char *ptr,
+				   int len) {
+
+	/* Can only rewind scratch buffer, not tmpbuffers */
+	if (!is_scratch_ptr(lp, ptr))
+		return;
+
 	assert(lp->sof >= len);
 	lp->sof -= len;
 }
@@ -332,18 +338,42 @@ static inline char *scratch_alloc (const struct tag *tag, struct logline *lp,
 				   int len) {
 	char *ptr;
 
-	if (lp->sof + len > conf.scratch_size) {
-		vk_log("WARNING", LOG_WARNING,
-		       "scratch pad is too small (%zd bytes), "
-		       "need %i bytes or more: increase log.line.scratch.size",
-		       conf.scratch_size, lp->sof + len);
-		return NULL;
+	if (unlikely(lp->sof + len > conf.scratch_size)) {
+		struct tmpbuf *tmpbuf;
+
+		cnt.scratch_toosmall++;
+
+		/* Scratch pad is too small: walk tmpbuffers to find
+		 * one with enough free space. */
+		tmpbuf = lp->tmpbuf;
+		while (tmpbuf) {
+			if (tmpbuf->of + len < tmpbuf->size)
+				break;
+			tmpbuf = tmpbuf->next;
+		}
+
+		/* No (usable) tmpbuf found, allocate a new one. */
+		if (!tmpbuf) {
+			size_t bsize = len < 512 ? 512 : len;
+			tmpbuf = malloc(sizeof(*tmpbuf) + bsize);
+			tmpbuf->size = bsize;
+			tmpbuf->of = 0;
+			/* Insert at head of tmpbuf list */
+			tmpbuf->next = lp->tmpbuf;
+			lp->tmpbuf = tmpbuf;
+			cnt.scratch_tmpbufs++;
+		}
+
+		ptr = tmpbuf->buf + tmpbuf->of;
+		tmpbuf->of += len;
+		return ptr;
 	}
 
 	ptr = lp->scratch + lp->sof;
 	lp->sof += len;
 	return ptr;
 }
+
 
 /**
  * Helper that allocates 'len' bytes in the scratch buffer and
@@ -353,9 +383,7 @@ static inline int scratch_write (const struct tag *tag, struct logline *lp,
 				 const char *src, int len) {
 	char *dst;
 
-	if (unlikely((dst = scratch_alloc(tag, lp, len)) == NULL))
-		return -1;
-
+	dst = scratch_alloc(tag, lp, len);
 	memcpy(dst, src, len);
 
 	match_assign(tag, lp, dst, len);
@@ -371,8 +399,7 @@ static inline int scratch_write0 (const struct tag *tag, struct logline *lp,
 				 const char *src, int len) {
 	char *dst;
 
-	if (unlikely((dst = scratch_alloc(tag, lp, len)) == NULL))
-		return -1;
+	dst = scratch_alloc(tag, lp, len);
 
 	memcpy(dst, src, len);
 
@@ -405,8 +432,7 @@ static inline int scratch_write_escaped (const struct tag *tag,
 	const char *s, *srcend = src + len;
 
 	/* Allocate initial space for escaped string. */
-	if (unlikely((dst = scratch_alloc(tag, lp, len + 10)) == NULL))
-		return -1;
+	dst = scratch_alloc(tag, lp, len * 5);
 
 	dstend = dst + len + 10;
 
@@ -432,12 +458,7 @@ static inline int scratch_write_escaped (const struct tag *tag,
 			out = s;
 		}
 
-		/* Increase scratch pad if necessary. */
-		if (unlikely((d + outlen >= dstend))) {
-			if (unlikely(!scratch_alloc(tag, lp, outlen + 20)))
-				return -1;
-			dstend += outlen + 20;
-		}
+		assert(d + outlen < dstend);
 
 		if (likely(outlen == 1))
 			*(d++) = *out;
@@ -450,7 +471,7 @@ static inline int scratch_write_escaped (const struct tag *tag,
 	}
 
 	/* Rewind scratch pad to reclaim unused memory. */
-	scratch_rewind(lp, (int)(dstend-d));
+	scratch_rewind(lp, dst, (int)(dstend-d));
 
 	/* Assign new matched string */
 	match_assign0(tag, lp, dst, (int)(d-dst));
@@ -473,8 +494,7 @@ static inline int scratch_printf (const struct tag *tag, struct logline *lp,
 	r = vsnprintf(NULL, 0, fmt, ap2);
 	va_end(ap2);
 
-	if (!(dst = scratch_alloc(tag, lp, r+1)))
-		return -1;
+	dst = scratch_alloc(tag, lp, r+1);
 
 	va_start(ap, fmt);
 	vsnprintf(dst, r+1, fmt, ap);
@@ -514,8 +534,9 @@ static void match_assign (const struct tag *tag, struct logline *lp,
 		/* If 'ptr' is in the scratch pad; rewind the scratch pad
 		 * since we'll be re-writing the string escaped. */
 		if (is_scratch_ptr(lp, ptr)) {
+			const char *optr = ptr;
 			ptr = strndupa(ptr, len);
-			scratch_rewind(lp, len);
+			scratch_rewind(lp, optr, len);
 		}
 		scratch_write_escaped(tag, lp, ptr, len);
 
@@ -673,15 +694,14 @@ static int parse_t (const struct tag *tag, struct logline *lp,
 		localtime_r(&t, &tm);
 	}
 
-	if (unlikely(!(dst = scratch_alloc(tag, lp, timelen))))
-		return -1;
+	dst = scratch_alloc(tag, lp, timelen);
 
 	/* Format time string */
 	tlen = strftime(dst, timelen, timefmt, &tm);
 
 	/* Redeem unused space */
 	if (likely(tlen < timelen))
-		scratch_rewind(lp, timelen-tlen);
+		scratch_rewind(lp, dst, timelen-tlen);
 
 	match_assign(tag, lp, dst, tlen);
 
@@ -1482,12 +1502,19 @@ static void loglines_init (void) {
  */
 static void logline_reset (struct logline *lp) {
 	int i;
+	struct tmpbuf *tmpbuf;
 
 	/* Clear logline, except for scratch pad since it will be overwritten */
 
 	for (i = 0 ; i < conf.fconf_cnt ; i++)
 		memset(lp->match[i], 0,
 		       conf.fconf[i].fmt_cnt * sizeof(*lp->match[i]));
+
+	/* Free temporary buffers */
+	while ((tmpbuf = lp->tmpbuf)) {
+		lp->tmpbuf = tmpbuf->next;
+		free(tmpbuf);
+	}
 	
 	if (lp->key) {
 		free(lp->key);
