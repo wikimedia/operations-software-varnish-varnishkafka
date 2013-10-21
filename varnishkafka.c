@@ -1582,13 +1582,16 @@ static inline struct logline *logline_get (unsigned int id) {
 	}
 
 	/* Allocate and set up new logline */
-	lp = calloc(1, sizeof(*lp) + conf.scratch_size +
+	lp = malloc(sizeof(*lp) + conf.scratch_size +
 		    (conf.total_fmt_cnt * sizeof(*lp->match[0])));
+	memset(lp, 0, sizeof(*lp));
 	lp->id = id;
 	ptr = (char *)(lp+1) + conf.scratch_size;
 	for (i = 0 ; i < conf.fconf_cnt ; i++) {
+		size_t msize = conf.fconf[i].fmt_cnt * sizeof(*lp->match[i]);
 		lp->match[i] = (struct match *)ptr;
-		ptr += conf.fconf[i].fmt_cnt * sizeof(*lp->match[i]);
+		memset(lp->match[i], 0, msize);
+		ptr += msize;
 	}
 
 	LIST_INSERT_HEAD(&loglines[hkey].lps, lp, link);
