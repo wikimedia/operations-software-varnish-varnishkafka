@@ -1363,7 +1363,7 @@ static int kafka_stats_cb (rd_kafka_t *rk, char *json, size_t json_len,
 
 
 static void render_match_string (struct fmt_conf *fconf, struct logline *lp) {
-	char buf[4096];
+	char buf[8192];
 	int  of = 0;
 	int  i;
 
