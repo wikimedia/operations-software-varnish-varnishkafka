@@ -1699,6 +1699,12 @@ static int parse_tag (void *priv, enum VSL_tag_e tag, unsigned id,
 	/* Update bitfield of seen tags (-m regexp) */
 	lp->tags_seen |= bitmap;
 
+	/* Truncate data if exceeding configured max */
+	if (unlikely(len > conf.tag_size_max)) {
+		cnt.trunc++;
+		len = conf.tag_size_max;
+	}
+
 	/* Accumulate matched tag content */
 	if (likely(!(is_complete = tag_match(lp, spec, tag, ptr, len))))
 		return conf.pret;
@@ -1813,6 +1819,7 @@ int main (int argc, char **argv) {
 	conf.log_rate_period = 60;
 	conf.daemonize = 1;
 	conf.datacopy  = 1;
+	conf.tag_size_max   = 2048;
 	conf.loglines_hsize = 5000;
 	conf.loglines_hmax  = 5;
 	conf.scratch_size   = 4096;

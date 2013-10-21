@@ -149,7 +149,9 @@ static int conf_set (const char *name, const char *val,
 				 "Unknown format.key.type value \"%s\"", val);
 			return -1;
 		}
-	} else if (!strcmp(name, "log.level"))
+	} else if (!strcmp(name, "tag.size.max"))
+		conf.tag_size_max = atoi(val);
+	else if (!strcmp(name, "log.level"))
 		conf.log_level = atoi(val);
 	else if (!strcmp(name, "log.stderr")) {
 		if (conf_tof(val))

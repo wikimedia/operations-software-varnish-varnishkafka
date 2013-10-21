@@ -187,6 +187,9 @@ struct conf {
 	int         total_fmt_cnt;
 	int         loglines_hsize;  /* Log id hash size */
 	int         loglines_hmax;   /* Max log ids per hash bucket */
+	int         tag_size_max;    /* Maximum tag size to accept without
+				      * truncating it. */
+
 	int         stats_interval;  /* Statistics output interval */
 	time_t      t_last_stats;    /* Last stats output */
 

@@ -104,6 +104,12 @@ format.key = %{%s}t
 output = kafka
 
 
+# The maximum accepted log tag size.
+# Larger tags will be truncated to this size.
+# Defaults to 2048
+#tag.size.max = 2048
+
+
 # EXPERIMENTAL
 # Indicates if the log tag data read from VSL files should be copied instantly
 # when read (true). If this is set to false the data is assumed to be
