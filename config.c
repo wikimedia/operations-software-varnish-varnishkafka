@@ -91,33 +91,29 @@ static int conf_set (const char *name, const char *val,
 		     char *errstr, size_t errstr_size) {
 	rd_kafka_conf_res_t res;
 
-	/* Try librdkafka configuration properties first.
-	 * If it doesnt match, we try our own. */
 
-	if (!strncmp(name, "topic.", strlen("topic."))) {
+	/* Kafka configuration */
+	if (!strncmp(name, "kafka.", strlen("kafka."))) {
+		name += strlen("kafka.");
+
 		/* Kafka topic configuration. */
-		
-		res = rd_kafka_topic_conf_set(conf.topic_conf,
-					      name+strlen("topic."), val,
-					      errstr, errstr_size);
-		if (res == RD_KAFKA_CONF_INVALID)
-			return -1;
-		else if (res == RD_KAFKA_CONF_OK)
+		if (!strncmp(name, "topic.", strlen("topic.")))
+			res = rd_kafka_topic_conf_set(conf.topic_conf,
+						      name+strlen("topic."),
+						      val,
+						      errstr, errstr_size);
+		else /* Kafka global configuration */
+			res = rd_kafka_conf_set(conf.rk_conf, name,
+						val, errstr, errstr_size);
+
+		if (res == RD_KAFKA_CONF_OK)
 			return 0;
 		else if (res != RD_KAFKA_CONF_UNKNOWN)
-			return 0;
-	}
-
-	/* Kafka main configuration */
-	res = rd_kafka_conf_set(conf.rk_conf, name, val, errstr, errstr_size);
-	if (res == RD_KAFKA_CONF_INVALID)
-		return -1;
-	else if (res == RD_KAFKA_CONF_OK)
-		return 0;
-	else if (res != RD_KAFKA_CONF_UNKNOWN)
-		return 0;
-
+			return -1;
 		
+		/* Unknown configs: fall thru */
+		name -= strlen("kafka.");
+	}
 
 	/* librdkafka handles NULL configuration values, we dont. */
 	if (!val) {
@@ -127,9 +123,9 @@ static int conf_set (const char *name, const char *val,
 	}
 			 
 	/* varnishkafka configuration options */
-	if (!strcmp(name, "topic"))
+	if (!strcmp(name, "kafka.topic"))
 		conf.topic = strdup(val);
-	else if (!strcmp(name, "partition"))
+	else if (!strcmp(name, "kafka.partition"))
 		conf.partition = atoi(val);
 	else if (!strcmp(name, "format"))
 		conf.format[FMT_CONF_MAIN] = strdup(val);
@@ -191,13 +187,13 @@ static int conf_set (const char *name, const char *val,
 				 "try \"stdout\" or \"kafka\"", val);
 			return -1;
 		}
-	} else if (!strcmp(name, "log.data.copy"))
+	} else if (!strcmp(name, "logline.data.copy"))
 		conf.datacopy = conf_tof(val);
-	else if (!strcmp(name, "log.hash.size"))
+	else if (!strcmp(name, "logline.hash.size"))
 		conf.loglines_hsize = atoi(val);
-	else if (!strcmp(name, "log.hash.max"))
+	else if (!strcmp(name, "logline.hash.max"))
 		conf.loglines_hmax = atoi(val);
-	else if (!strcmp(name, "log.line.scratch.size"))
+	else if (!strcmp(name, "logline.scratch.size"))
 		conf.scratch_size = atoi(val);
 	else if (!strncmp(name, "varnish.arg.", strlen("varnish.arg."))) {
 		const char *t = name + strlen("varnish.arg.");

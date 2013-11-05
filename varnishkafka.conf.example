@@ -119,32 +119,32 @@ output = kafka
 # NOTE:
 #   Must be set to true for offline files (-r file..) due to the way
 #   libvarnishapi reads its data.
-log.data.copy = true
+logline.data.copy = true
 
 
 # TUNING
 # Logline cache hash tuning
-# 'log.hash.size * log.hash.max' dictates the maximum number of cached logline
-# entries in memory.
+# 'logline.hash.size * logline.hash.max' dictates the maximum number of
+# cached logline entries in memory.
 
 # Number of hash buckets (keyed by log id).
 # Higher number yields more performance at the expense of memory.
 # Set this to avg_requests_per_second / 5.
 # Defaults to 5000
-#log.hash.size = 5000
+#logline.hash.size = 5000
 
 # Maximum number of loglines per hash bucket
 # Higher number yields less memory consumption at the expense of performance.
-# Set this to avg_requests_per_second / log.hash.size.
+# Set this to avg_requests_per_second / logline.hash.size.
 # Defaults to 5
-#log.hash.max = 5
+#logline.hash.max = 5
 
 # Size of per logline scratch buffer.
 # The scratch buffer is used as a temporary storage space while
 # collecting tags for the log line.
 # If the scratch size is too small the logline tag match will be incomplete.
 # Defaults to 4096 bytes.
-#log.line.scratch.size = 4096
+#logline.scratch.size = 4096
 
 
 # Start for sequence number (%n)
@@ -217,6 +217,9 @@ varnish.arg.m = RxRequest:^(?!PURGE$)
 #                                                                     #
 # Kafka configuration                                                 #
 #                                                                     #
+# Kafka configuration properties are prefixed with "kafka."           #
+# and topic properties are prefixed with "kafka.topic.".              #
+#                                                                     #
 # For the full range of Kafka handle and topic configuration          #
 # properties, see:                                                    #
 #  https://github.com/edenhill/librdkafka/blob/master/rdkafka.h       #
@@ -227,14 +230,14 @@ varnish.arg.m = RxRequest:^(?!PURGE$)
 #######################################################################
 
 # Initial list of kafka brokers
-metadata.broker.list = localhost:9092
+kafka.metadata.broker.list = localhost:9092
 
 # Maximum number of messages allowed on the local producer queue
 # Defaults to 1000000
-queue.buffering.max.messages = 1000000
+kafka.queue.buffering.max.messages = 1000000
 
 # Maximum number of retries per messageset.
-message.send.max.retries = 3
+kafka.message.send.max.retries = 3
 
 
 #
@@ -242,17 +245,17 @@ message.send.max.retries = 3
 #
 
 # Topic to produce messages to
-topic = varnish
+kafka.topic = varnish
 
 # Partition (-1: random, else one of the available partitions)
-partition = -1
+kafka.partition = -1
 
 
 # Required number of acks
-topic.request.required.acks = 1
+kafka.topic.request.required.acks = 1
 
 # Local message timeout (milliseconds)
-topic.message.timeout.ms = 60000
+kafka.topic.message.timeout.ms = 60000
 
 
 #
@@ -260,10 +263,10 @@ topic.message.timeout.ms = 60000
 #
 
 # partition on user name
-#partitioner = crc32(%u)
+#kafka.partitioner = crc32(%u)
 
 # partition on client IP
-#partitioner = iphash(%{X-Forwarded-For}i)
+#kafka.partitioner = iphash(%{X-Forwarded-For}i)
 
 
 
