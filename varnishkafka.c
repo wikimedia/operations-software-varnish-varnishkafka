@@ -73,7 +73,6 @@ static const char *fmt_conf_names[] = {
 	[FMT_CONF_KEY]  = "Key"
 };
 
-
 /**
  * Logline cache
  */
@@ -87,6 +86,7 @@ static struct {
 
 static int logline_cnt = 0; /* Current number of loglines in memory */
 
+static void logrotate(void);
 
 /**
  * Counters
@@ -102,8 +102,8 @@ static struct {
 } cnt;
 
 static void print_stats (void) {
-	vk_log("\"stats\"", LOG_INFO,
-	       "{ "
+	vk_log_stats("{ \"varnishkafka\": { "
+	       "\"time\":%llu, "
 	       "\"tx\":%"PRIu64", "
 	       "\"txerr\":%"PRIu64", "
 	       "\"kafka_drerr\":%"PRIu64", "
@@ -112,7 +112,8 @@ static void print_stats (void) {
 	       "\"scratch_tmpbufs\":%"PRIu64", "
 	       "\"lp_curr\":%i, "
 	       "\"seq\":%"PRIu64" "
-	       "}",
+	       "} }\n",
+	       (unsigned long long)time(NULL),
 	       cnt.tx,
 	       cnt.txerr,
 	       cnt.kafka_drerr,
@@ -1357,7 +1358,7 @@ static void kafka_dr_cb (rd_kafka_t *rk,
  */
 static int kafka_stats_cb (rd_kafka_t *rk, char *json, size_t json_len,
 			    void *opaque) {
-	vk_log("\"kafkastats\"", LOG_INFO, "%.*s", (int)json_len, json);
+	vk_log_stats("{ \"kafka\": %s }\n", json);
 	return 0;
 }
 
@@ -1729,10 +1730,14 @@ static int parse_tag (void *priv, enum VSL_tag_e tag, unsigned id,
 		rate_limiters_rollover(lp->t_last);
 
 	/* Stats output */
-	if (unlikely(conf.stats_interval &&
-		     lp->t_last >= conf.t_last_stats + conf.stats_interval)) {
-		print_stats();
-		conf.t_last_stats = lp->t_last;
+	if (conf.stats_interval) {
+		if (unlikely(conf.need_logrotate)) {
+			logrotate();
+		}
+		if (unlikely(lp->t_last >= conf.t_last_stats + conf.stats_interval)) {
+			print_stats();
+			conf.t_last_stats = lp->t_last;
+		}
 	}
 
 	return conf.pret;
@@ -1759,6 +1764,70 @@ void vk_log0 (const char *func, const char *file, int line,
 
 	if (conf.log_to & VK_LOG_STDERR)
 		fprintf(stderr, "%%%i %s: %s\n", level, facility, buf);
+}
+
+/**
+ * Appends a formatted string to the conf.stats_fp file.
+ * conf.stats_fp is configured using the log.statistics.file property.
+ */
+void vk_log_stats(const char *fmt, ...) {
+	va_list ap;
+
+	/* If stats_fp is 0, vk_log_stats() shouldn't have been called */
+	if (!conf.stats_fp)
+		return;
+
+	/* Check if stats_fp needs rotating.
+	   This will usually already be taken care
+	   of by the check in parse_tag, but we
+	   do it here just in case we need to rotate
+	   and someone else called vk_log_stats,
+	   e.g. kafka_stats_cb.
+	*/
+	if (unlikely(conf.need_logrotate)) {
+		logrotate();
+	}
+
+	va_start(ap, fmt);
+	vfprintf(conf.stats_fp, fmt, ap);
+	va_end(ap);
+
+	/* flush stats_fp to make sure valid JSON data
+	   (e.g. full lines with closing object brackets)
+       is written to disk */
+	if (fflush(conf.stats_fp)) {
+		vk_log("STATS", LOG_ERR,
+			"Failed to fflush log.statistics.file %s: %s",
+			conf.stats_file, strerror(errno));
+	}
+}
+
+/**
+ * Closes and reopens any open logging file pointers.
+ * This should be called not from the SIGHUP handler, but
+ * instead from somewhere in a main execution loop.
+ */
+static void logrotate(void) {
+	fclose(conf.stats_fp);
+
+	if (!(conf.stats_fp = fopen(conf.stats_file, "a"))) {
+		vk_log("STATS", LOG_ERR,
+			"Failed to reopen log.statistics.file %s after logrotate: %s",
+			conf.stats_file, strerror(errno));
+	}
+
+	conf.need_logrotate = 0;
+}
+
+/**
+ * Hangup signal handler.
+ * Sets the global logratate variable to 1 to indicate
+ * that any open file handles should be closed and reopened
+ * as soon as possible.
+ *
+ */
+static void sig_hup(int sig) {
+	conf.need_logrotate = 1;
 }
 
 
@@ -1827,6 +1896,7 @@ int main (int argc, char **argv) {
 	conf.loglines_hmax  = 5;
 	conf.scratch_size   = 4096;
 	conf.stats_interval = 60;
+	conf.stats_file     = strdup("/var/cache/varnishkafka.stats.json");
 	conf.log_kafka_msg_error = 1;
 	conf.rk_conf = rd_kafka_conf_new();
 	rd_kafka_conf_set(conf.rk_conf, "client.id", "varnishkafka", NULL, 0);
@@ -1894,11 +1964,21 @@ int main (int argc, char **argv) {
 	/* Set up statistics gathering in librdkafka, if enabled. */
 	if (conf.stats_interval) {
 		char tmp[30];
+
+		if (!(conf.stats_fp = fopen(conf.stats_file, "a"))) {
+			fprintf(stderr, "Failed to open statistics log file %s: %s\n",
+				conf.stats_file, strerror(errno));
+			exit(1);
+		}
+
 		snprintf(tmp, sizeof(tmp), "%i", conf.stats_interval*1000);
 		rd_kafka_conf_set_stats_cb(conf.rk_conf, kafka_stats_cb);
 		rd_kafka_conf_set(conf.rk_conf, "statistics.interval.ms", tmp,
 				  NULL, 0);
-	}
+
+		/* Install SIGHUP handler for logrotating stats_fp. */
+		signal(SIGHUP, sig_hup);
+}
 
 
 	/* Termination signal handlers */
@@ -2014,6 +2094,13 @@ int main (int argc, char **argv) {
 
 	loglines_term();
 	print_stats();
+
+	/* if stats_fp is set (i.e. open), close it. */
+	if (conf.stats_fp) {
+		fclose(conf.stats_fp);
+		conf.stats_fp = NULL;
+	}
+	free(conf.stats_file);
 
 	rate_limiters_rollover(time(NULL));
 

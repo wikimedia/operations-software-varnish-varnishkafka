@@ -191,7 +191,11 @@ struct conf {
 				      * truncating it. */
 
 	int         stats_interval;  /* Statistics output interval */
+	char       *stats_file;      /* Statistics output log file */
+	FILE       *stats_fp;        /* Statistics file pointer    */
 	time_t      t_last_stats;    /* Last stats output */
+
+	int         need_logrotate;  /* If this is 1, log files will be reopened */
 
 	/* Kafka config */
 	int         partition;
@@ -230,6 +234,8 @@ void vk_log0 (const char *func, const char *file, int line,
 
 #define _DBG(fmt...) vk_log("DEBUG", LOG_DEBUG, fmt)
 
+void vk_log_stats(const char *fmt, ...)
+	__attribute__((format (printf, 1, 2)));
 
 void out_kafka (struct fmt_conf *fconf, struct logline *lp,
 		const char *buf, size_t len);

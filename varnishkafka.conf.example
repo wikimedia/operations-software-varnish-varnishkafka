@@ -176,14 +176,22 @@ log.syslog = true
 # Kafka: log message delivery failures (requires required.acks > 0)
 log.kafka.msg.error = true
 
+#
+# JSON Statistics
+#
+# Statistics is collected from varnishkafka itself as well as librdkafka
+# Each JSON object has a top level key of either 'varnishkafka' or
+# 'kafka' to indicate which type of statistics the object contains.
+# Each line is a valid JSON object.
+#
 
 # Statistics output interval
-# Statistics is collected from varnishkafka itself as well as librdkafka
-# and output as a log message of level LOG_INFO containing a JSON object
-# prefixed with either "STATS: " or "KAFKASTATS: ".
 # Defaults to 60 seconds, use 0 to disable.
 #log.statistics.interval = 60
 
+# Statistics output file
+# Defaults to /var/cache/varnishkafka.stats.json
+#log.statistics.file = /var/cache/varnishkafka.stats.json
 
 
 # daemonize varnishkafka (boolean)
