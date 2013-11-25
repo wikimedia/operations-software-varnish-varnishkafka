@@ -7,7 +7,7 @@ DESTDIR?=/usr/local
 # Let packagers override version and default configuration file path
 # through VER and CFPATH env variables.
 ifeq (,${VER})
-VER     := `git describe --abbrev=6 --tags HEAD`
+VER     := `git describe --abbrev=6 --tags HEAD --always`
 endif
 
 ifeq (,${CFPATH})
