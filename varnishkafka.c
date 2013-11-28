@@ -1694,7 +1694,7 @@ static int tag_match (struct logline *lp, int spec, enum VSL_tag_e tagid,
 		/* Get specified column if specified. */
 		if (tag->col)
 			if (!column_get(tag->col, ' ', ptr2, len2,
-					&ptr2, &len2) == -1)
+					&ptr2, &len2))
 				continue;
 
 		if (tag->parser) {
