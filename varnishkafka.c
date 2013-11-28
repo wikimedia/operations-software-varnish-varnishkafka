@@ -946,6 +946,8 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 				{ VSL_S_CLIENT, SLT_VCL_call,
 				  fmtvar: "Varnish:handling",
 				  parser: parse_handling },
+				{ VSL_S_CLIENT, SLT_VCL_Log,
+				  fmtvar: "VCL_Log:*" },
 
 			} },
 		['n'] = { {
@@ -1148,14 +1150,49 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 			/* mapping has fmtvar specified, make sure it 
 			 * matches the format's variable. */
 			if (map[(int)*s].f[i].fmtvar) {
-				if (!var ||
-				    strlen(map[(int)*s].f[i].fmtvar) != varlen||
-				    strncmp(map[(int)*s].f[i].fmtvar, var,
-					    varlen))
+				const char *iswc;
+
+				if (!var)
 					continue;
-				/* fmtvar's resets the format var */
-				var = NULL;
-				varlen = 0;
+
+				/* Match "xxxx:<key>".
+				 * If format definition's key is wildcarded
+				 * ("*") then use the configured key as var.
+				 * I.e., "%{VCL_Log:hit}x" will put "hit" in
+				 * var since VCL_Log is defined as wildcard:
+				 * "VCL_Log:*". */
+				if ((iswc = strstr(map[(int)*s].f[i].fmtvar,
+						   ":*"))) {
+					/* Wildcard definition */
+					int fvlen = (int)(iswc -
+							  map[(int)*s].
+							  f[i].fmtvar) + 1;
+
+					/* Check that var matches prefix.
+					 * I.e.: "VCL_Log:" cmp "VCL_Log:" */
+					if (varlen <= fvlen ||
+					    strncmp(map[(int)*s].f[i].fmtvar,
+						    var, fvlen))
+						continue;
+
+					/* set format var to "..:<key>" */
+					var = var + fvlen;
+					varlen -= fvlen;
+
+
+				} else {
+					/* Non-wildcard definition.
+					 * Var must match exactly. */
+					if (varlen != strlen(map[(int)*s].
+							     f[i].fmtvar) ||
+					    strncmp(map[(int)*s].f[i].fmtvar,
+						    var, varlen))
+						continue;
+
+					/* fmtvar's resets the format var */
+					var = NULL;
+					varlen = 0;
+				}
 			}
 
 			if (tag_add(fconf, &fconf->fmt[fmtid],
