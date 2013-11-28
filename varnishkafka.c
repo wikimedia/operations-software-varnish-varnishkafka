@@ -432,10 +432,10 @@ static inline int scratch_write_escaped (const struct tag *tag,
 	char *d;
 	const char *s, *srcend = src + len;
 
-	/* Allocate initial space for escaped string. */
+	/* Allocate initial space for escaped string.
+	 * The maximum expansion size per character is 5 (octal coding). */
 	dst = scratch_alloc(tag, lp, len * 5);
-
-	dstend = dst + len + 10;
+	dstend = dst + (len * 5);
 
 	s = src;
 	d = dst;
