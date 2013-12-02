@@ -190,8 +190,8 @@ log.kafka.msg.error = true
 #log.statistics.interval = 60
 
 # Statistics output file
-# Defaults to /var/cache/varnishkafka.stats.json
-#log.statistics.file = /var/cache/varnishkafka.stats.json
+# Defaults to /tmp/varnishkafka.stats.json
+#log.statistics.file = /tmp/varnishkafka.stats.json
 
 
 # daemonize varnishkafka (boolean)

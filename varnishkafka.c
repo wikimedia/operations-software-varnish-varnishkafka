@@ -1933,7 +1933,7 @@ int main (int argc, char **argv) {
 	conf.loglines_hmax  = 5;
 	conf.scratch_size   = 4096;
 	conf.stats_interval = 60;
-	conf.stats_file     = strdup("/var/cache/varnishkafka.stats.json");
+	conf.stats_file     = strdup("/tmp/varnishkafka.stats.json");
 	conf.log_kafka_msg_error = 1;
 	conf.rk_conf = rd_kafka_conf_new();
 	rd_kafka_conf_set(conf.rk_conf, "client.id", "varnishkafka", NULL, 0);
