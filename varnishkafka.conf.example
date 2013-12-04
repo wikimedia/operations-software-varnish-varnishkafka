@@ -230,7 +230,7 @@ varnish.arg.m = RxRequest:^(?!PURGE$)
 #                                                                     #
 # For the full range of Kafka handle and topic configuration          #
 # properties, see:                                                    #
-#  https://github.com/edenhill/librdkafka/blob/master/rdkafka.h       #
+#  http://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md #
 #                                                                     #
 # And the Apache Kafka configuration reference:                       #
 #  http://kafka.apache.org/08/configuration.html                      #
