@@ -265,6 +265,9 @@ kafka.topic.request.required.acks = 1
 # Local message timeout (milliseconds)
 kafka.topic.message.timeout.ms = 60000
 
+# SO_SNDBUFF Socket send buffer size. System default is used if 0.
+# Default is 0.
+#kafka.socket.send.buffer.bytes = 0
 
 #
 # Builtin partitioners (Future. Not implemented)
