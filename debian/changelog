@@ -1,3 +1,9 @@
+varnishkafka (1.0.0-2) precise; urgency=low
+
+  * Fix for logrotate postrotate reload
+
+ -- Andrew Otto (WMF) <otto@wikimedia.org>  Wed, 18 Dec 2013 16:33:46 +0000
+
 varnishkafka (1.0.0-1) unstable; urgency=low
 
   * Initial release.
