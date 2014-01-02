@@ -65,6 +65,8 @@
 #  Additional formatter specials:                                     #
 #    %{<strftime-format>}t - format timestamp according to supplied   #
 #                            strftime(3) compatible format string.    #
+#    %{Varnish:xid}x       - transaction id of client request.        #
+#                            Same value as X-Varnish header           #
 #                                                                     #
 #                                                                     #
 #                                                                     #
