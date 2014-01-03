@@ -1483,6 +1483,11 @@ static void render_match_json (struct fmt_conf *fconf, struct logline *lp) {
 			yajl_gen_string(g, ptr, len);
 			break;
 		case FMT_TYPE_NUMBER:
+			if (len == 3 && !strncasecmp(ptr, "nan", 3)) {
+				/* There is no NaN in JSON, encode as null */
+				ptr = "null";
+				len = 4;
+			}
 			yajl_gen_number(g, ptr, len);
 			break;
 		}
