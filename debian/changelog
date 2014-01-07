@@ -1,3 +1,10 @@
+varnishkafka (1.0.1-1) precise; urgency=low
+
+  * Fix for converting 'nan' to null in json output
+  * Adding suppot for %{Varnish:xid}x (X-Varnish: ..)
+
+ -- Andrew Otto (WMF) <otto@wikimedia.org>  Tue, 07 Jan 2014 16:30:08 +0000
+
 varnishkafka (1.0.0-2) precise; urgency=low
 
   * Fix for logrotate postrotate reload
