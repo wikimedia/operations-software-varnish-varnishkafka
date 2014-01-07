@@ -873,7 +873,7 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 				       const char *ptr, int len);
 			/* Optional tag->flags */
 			int tag_flags;
-		} f[3+1]; /* increase size when necessary (max used size + 1) */
+		} f[4+1]; /* increase size when necessary (max used size + 1) */
 		
 		/* Default string if no matching tag was found or all
 		 * parsers failed, defaults to "-". */
@@ -940,6 +940,8 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 		['x'] = { { 
 				{ VSL_S_CLIENT, SLT_ReqEnd,
 				  fmtvar: "Varnish:time_firstbyte", col: 5 },
+				{ VSL_S_CLIENT, SLT_ReqEnd,
+				  fmtvar: "Varnish:xid", col: 1 },
 				{ VSL_S_CLIENT, SLT_VCL_call,
 				  fmtvar: "Varnish:hitmiss",
 				  parser: parse_hitmiss },
@@ -1481,6 +1483,11 @@ static void render_match_json (struct fmt_conf *fconf, struct logline *lp) {
 			yajl_gen_string(g, ptr, len);
 			break;
 		case FMT_TYPE_NUMBER:
+			if (len == 3 && !strncasecmp(ptr, "nan", 3)) {
+				/* There is no NaN in JSON, encode as null */
+				ptr = "null";
+				len = 4;
+			}
 			yajl_gen_number(g, ptr, len);
 			break;
 		}
