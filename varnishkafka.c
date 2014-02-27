@@ -1685,7 +1685,10 @@ static int tag_match (struct logline *lp, int spec, enum VSL_tag_e tagid,
 				continue;
 
 			if (likely(len > tag->varlen + 1 /* ":" */)) {
-				ptr2 = t+2; /* ": " */
+				ptr2 = t+1; /* ":" */
+                                /* Strip leading whitespaces */
+                                while (*ptr2 == ' ' && ptr2 < ptr+len)
+                                        ptr2++;
 				len2 = len - (int)(ptr2-ptr);
 			} else {
 				/* Empty value */
