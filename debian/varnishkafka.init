@@ -14,7 +14,7 @@
 . /lib/lsb/init-functions
 
 NAME=varnishkafka
-DESC="HTTP accelerator log deamon"
+DESC="HTTP accelerator log daemon"
 PATH=/sbin:/bin:/usr/sbin:/usr/bin
 DAEMON=/usr/bin/$NAME
 PIDFILE=/var/run/$NAME/$NAME.pid

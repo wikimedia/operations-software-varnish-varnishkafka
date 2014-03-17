@@ -6,7 +6,7 @@
   compress
   delaycompress
   postrotate
-    service rsyslog reload
+    service rsyslog reload >/dev/null
   endscript
 }
 
@@ -18,6 +18,6 @@
   compress
   delaycompress
   postrotate
-    service varnishkafka reload
+    service varnishkafka reload >/dev/null
   endscript
 }

@@ -1,3 +1,11 @@
+varnishkafka (1.0.2-1) precise; urgency=low
+
+  * Dont require whitespace-separated Hdr:fields
+  * Explicitly link with zlib
+  * logrotate scripts now redirect stderr to /dev/null
+
+ -- Andrew Otto (WMF) <otto@wikimedia.org>  Mon, 07 Mar 2014 19:44:00 +0000
+
 varnishkafka (1.0.1-1) precise; urgency=low
 
   * Fix for converting 'nan' to null in json output
