@@ -142,6 +142,7 @@ static char *const_string_add (const char *in, int inlen) {
 	char *ret;
 	const char *instr = strndupa(in, inlen);
 
+	assert(inlen > 0);
 	if (!const_string || !(ret = strstr(const_string, instr))) {
 		if (const_string_len + inlen + 1 >= const_string_size) {
 			/* Reallocate buffer to fit new string (and more) */
@@ -320,7 +321,7 @@ static inline int is_scratch_ptr (const struct logline *lp, const char *ptr) {
  * Rewinds (deallocates) the last allocation by 'len' bytes.
  */
 static inline void scratch_rewind (struct logline *lp, const char *ptr,
-				   int len) {
+				   size_t len) {
 
 	/* Can only rewind scratch buffer, not tmpbuffers */
 	if (!is_scratch_ptr(lp, ptr))
@@ -366,11 +367,13 @@ static inline char *scratch_alloc (const struct tag *tag, struct logline *lp,
 		}
 
 		ptr = tmpbuf->buf + tmpbuf->of;
+		assert(tmpbuf->of + len > tmpbuf->of); /* integer overflow */
 		tmpbuf->of += len;
 		return ptr;
 	}
 
 	ptr = lp->scratch + lp->sof;
+	assert(lp->sof + len > lp->sof); /* integer overflow */
 	lp->sof += len;
 	return ptr;
 }
@@ -805,14 +808,15 @@ static char *string_replace_arr (const char *in, const char **arr) {
 	const char *s, *sp;
 
 	out = malloc(outsize);
+	assert(out);
 
 	s = sp = in;
 	while (*s) {
 		const char **a;
 
 		for (a = arr ; *a ; a += 2) {
-			const char *from = arr[0];
-			const char *to   = arr[1];
+			const char *from = a[0];
+			const char *to   = a[1];
 			size_t fromlen   = strlen(from);
 			size_t tolen;
 			ssize_t diff;
@@ -829,7 +833,7 @@ static char *string_replace_arr (const char *in, const char **arr) {
 			}
 			sp = s += fromlen;
 
-			if (of + diff >= outsize) {
+			if (of + tolen >= outsize) {
 				/* Not enough space in output buffer,
 				 * reallocate and make some headroom to
 				 * avoid future reallocs. */
@@ -847,6 +851,11 @@ static char *string_replace_arr (const char *in, const char **arr) {
 	}
 
 	if (s > sp) {
+		if ( of + (int)(s-sp) >= outsize) {
+			outsize = ( of + (int)(s-sp) + 1 );
+			out = realloc(out, outsize);
+			assert(out);
+		}
 		memcpy(out+of, sp, (int)(s-sp));
 		of += (int)(s-sp);
 	}
