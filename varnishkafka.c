@@ -771,6 +771,22 @@ static int parse_seq (const struct tag *tag, struct logline *lp,
 	return scratch_printf(tag, lp, "%"PRIu64, conf.sequence_number);
 }
 
+static int parse_DT (const struct tag *tag, struct logline *lp,
+                     const char *ptr, int len) {
+        double start, stop;
+
+        if (sscanf(strndupa(ptr, len), "%*d %lf %lf %*d.%*d %*s",
+                   &start, &stop) != 2)
+                return 0;
+        if (tag->fmt->id == (int)'D')
+                return scratch_printf(tag, lp, "%.0f",
+                                      (stop-start) * 1000000.0f);
+        else if (tag->fmt->id == (int)'T')
+                return scratch_printf(tag, lp, "%i", (int)(stop-start));
+        else
+                return 0;
+}
+
 
 
 /**
@@ -887,6 +903,14 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 				{ VSL_S_BACKEND, SLT_RxHeader,
 				  var: "content-length" }
 			} },
+                ['D'] = { {
+                                { VSL_S_CLIENT, SLT_ReqEnd,
+                                  parser: parse_DT }
+                        } },
+                ['T'] = { {
+                                { VSL_S_CLIENT, SLT_ReqEnd,
+                                  parser: parse_DT }
+                        } },
 		['H'] = { {
 				{ VSL_S_CLIENT, SLT_RxProtocol },
 				{ VSL_S_BACKEND, SLT_TxProtocol },
