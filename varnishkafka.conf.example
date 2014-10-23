@@ -27,7 +27,9 @@
 #                                                                     #
 # format - format string                                              #
 #  %X                                                                 #
-#   where 'X' is one of the standard varnishncsa(1) formatters.       #
+#   where 'X' is one of the standard varnishncsa(1) formatters:       #
+#   %b, %D, %T, %H, %h, %{..}i, %l, %m, %q, %{..}o, %s, %t, %U,       #
+#   %u, %{..}x, %n                                                    #
 #   Example: %u                                                       #
 #                                                                     #
 #                                                                     #
