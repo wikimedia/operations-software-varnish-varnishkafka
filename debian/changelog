@@ -1,3 +1,13 @@
+varnishkafka (1.0.3-1) trusty-wikimedia; urgency=low
+
+  * Updated to 1.0.3, which brings in:
+    * 7bc65eb Remove debian/ directory from master branch
+    * 84f3833 Check assumptions, fix heap overflow
+    * 0f5b69c Added %D and %T formatters (request time)
+  * Added Build-Depends on zlib1g-dev to debian/control
+
+ -- Brandon Black <bblack@wikimedia.org>  Thu, 23 Oct 2014 22:27:51 +0000
+
 varnishkafka (1.0.2-1) precise; urgency=low
 
   * Dont require whitespace-separated Hdr:fields
