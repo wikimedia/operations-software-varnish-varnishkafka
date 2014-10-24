@@ -142,7 +142,7 @@ static char *const_string_add (const char *in, int inlen) {
 	char *ret;
 	const char *instr = strndupa(in, inlen);
 
-	assert(inlen > 0);
+	assert(inlen >= 0);
 	if (!const_string || !(ret = strstr(const_string, instr))) {
 		if (const_string_len + inlen + 1 >= const_string_size) {
 			/* Reallocate buffer to fit new string (and more) */
