@@ -1,3 +1,11 @@
+varnishkafka (1.0.6-1) trusty-wikimedia; urgency=medium
+
+  * Updated to 1.0.6 for:
+    * ddcdace allow zero-length scratch adds as well
+    * 8b449cc allow zero-length const_string_add()
+
+ -- Brandon Black <bblack@wikimedia.org>  Mon, 27 Oct 2014 18:16:31 +0000
+
 varnishkafka (1.0.3-1) trusty-wikimedia; urgency=low
 
   * Updated to 1.0.3, which brings in:
