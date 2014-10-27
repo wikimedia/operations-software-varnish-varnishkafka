@@ -45,6 +45,7 @@
 #include <sys/queue.h>
 #include <syslog.h>
 #include <netdb.h>
+#include <limits.h>
 
 #include <varnish/varnishapi.h>
 #include <librdkafka/rdkafka.h>
@@ -367,13 +368,13 @@ static inline char *scratch_alloc (const struct tag *tag, struct logline *lp,
 		}
 
 		ptr = tmpbuf->buf + tmpbuf->of;
-		assert(tmpbuf->of + len > tmpbuf->of); /* integer overflow */
+		assert(len <= INT_MAX - tmpbuf->of); /* integer overflow */
 		tmpbuf->of += len;
 		return ptr;
 	}
 
 	ptr = lp->scratch + lp->sof;
-	assert(lp->sof + len > lp->sof); /* integer overflow */
+	assert(len <= INT_MAX - lp->sof); /* integer overflow */
 	lp->sof += len;
 	return ptr;
 }
