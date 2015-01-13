@@ -1,3 +1,9 @@
+varnishkafka (1.0.6-3) jessie-wikimedia; urgency=medium
+
+  * Fix rsyslog restart on hosts without "restart" command (jessie)
+
+ -- Brandon Black <bblack@wikimedia.org>  Fri, 16 Jan 2015 19:50:32 +0000
+
 varnishkafka (1.0.6-1) trusty-wikimedia; urgency=medium
 
   * Updated to 1.0.6 for:

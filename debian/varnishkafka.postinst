@@ -9,7 +9,7 @@ set -e
 case "$1" in
     configure|reconfigure)
         # force rsyslog to create /var/log/varnishkafka.log on install.
-        restart rsyslog
+        service rsyslog restart
         # chown /var/cache/varnishkafka for writing
         chown varnishlog:varnishlog /var/cache/varnishkafka
     ;;
