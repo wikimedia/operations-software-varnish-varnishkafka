@@ -263,8 +263,8 @@ static int trim (char **sp, char *end) {
  */
 int conf_file_read (const char *path) {
 	FILE *fp;
-	char buf[512];
-	char errstr[512];
+	char buf[4096];
+	char errstr[4096];
 	int line = 0;
 
 	if (!(fp = fopen(path, "r"))) {

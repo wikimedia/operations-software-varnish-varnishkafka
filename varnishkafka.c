@@ -1956,7 +1956,7 @@ static void usage (const char *argv0) {
 
 
 int main (int argc, char **argv) {
-	char errstr[512];
+	char errstr[4096];
 	char hostname[1024];
 	struct hostent *lh;
 	char c;
