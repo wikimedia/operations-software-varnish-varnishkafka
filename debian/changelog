@@ -1,3 +1,9 @@
+varnishkafka (1.0.7-1) jessie-wikmiedia; urgency=medium
+
+  * allow config lines up to 4K length
+
+ -- Andrew Otto (WMF) <otto@wikimedia.org>  Wed, 25 Nov 2015 21:24:09 +0000
+
 varnishkafka (1.0.6-3) jessie-wikimedia; urgency=medium
 
   * Fix rsyslog restart on hosts without "restart" command (jessie)
