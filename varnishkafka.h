@@ -44,7 +44,7 @@
 
 #define VSL_TAGS_MAX 255
 /* A tag that is in all requests but only once. */
-#define VSL_TAG__ONCE  SLT_ReqEnd
+#define VSL_TAG__ONCE  SLT_End
 
 
 /**
@@ -168,9 +168,15 @@ struct fmt_conf {
  * Try to keep commonly used fields at the top.
  */
 struct conf {
-	int         run;
-	int         pret;   /* parse return value: use to exit parser. */
-	int         m_flag;
+    int         run;
+    int         pret;   /* parse return value: use to exit parser. */
+    int         q_flag;
+    char*       q_flag_query;
+    int         N_flag;
+    char*       N_flag_path;
+    int         n_flag;
+    char*       n_flag_name;
+
 
 	/* Sparsely populated with desired tags */
 	struct tag **tag;
@@ -214,13 +220,16 @@ struct conf {
 	char       *format[FMT_CONF_NUM]; /* Configured format string(s) */
 	int         daemonize;
 
-	rd_kafka_conf_t       *rk_conf;
-	rd_kafka_topic_conf_t *topic_conf;
+    rd_kafka_conf_t       *rk_conf;
+    rd_kafka_topic_conf_t *topic_conf;
+
+    /* Varnish shared memory API structures (used in multiple c files) */
+    struct VSM_data *vsm;
+    struct VSL_data *vsl;
+    struct VSLQ *vslq;
 };
 
 extern struct conf conf;
-struct VSM_data *vd;
-
 
 int conf_file_read (const char *path);
 

@@ -47,7 +47,11 @@
 #include <netdb.h>
 #include <limits.h>
 
-#include <varnish/varnishapi.h>
+#include <vapi/vsm.h>
+#include <vapi/vsl.h>
+#include <vapi/voptget.h>
+#include <vdef.h>
+
 #include <librdkafka/rdkafka.h>
 
 #include <yajl/yajl_common.h>
@@ -61,9 +65,6 @@
 static rd_kafka_t *rk;
 /* Kafka topic */
 static rd_kafka_topic_t *rkt;
-
-/* Varnish shared memory handle*/
-struct VSM_data *vd;
 
 const char *conf_file_path = VARNISHKAFKA_CONF_PATH;
 
@@ -629,24 +630,8 @@ static int column_get (int col, char delim, const char *ptr, int len,
 
 /**
  * Misc parsers for formatters
- *
+ * (check format_parse() for more info)
  */
-static int parse_BackendOpen (const struct tag *tag, struct logline *lp,
-			      const char *ptr, int len) {
-	const char *s;
-	int slen;
-	const int deflen = strlen("default");
-
-	if (unlikely(!column_get(1, ' ', ptr, len, &s, &slen)))
-		return 0;
-
-	if (slen == deflen && !strncmp(s, "default", slen))
-		column_get(2, ' ', ptr, len, &s, &slen);
-
-	match_assign(tag, lp, s, slen);
-
-	return 0;
-}
 
 /**
  * Parse a URL (without query string) retrieved from a tag's payload.
@@ -696,7 +681,7 @@ static int parse_t (const struct tag *tag, struct logline *lp,
 	if (tag->var)
 		timefmt = tag->var;
 
-	if (tag->tag == SLT_TxHeader) {
+	if (tag->tag == SLT_BereqHeader) {
 		if (unlikely(!strptime(strndupa(ptr, len),
 				       "%a, %d %b %Y %T", &tm)))
 			return 0;
@@ -750,26 +735,14 @@ static int parse_auth_user (const struct tag *tag, struct logline *lp,
 }
 
 
-static int parse_hitmiss (const struct tag *tag, struct logline *lp,
-			  const char *ptr, int len) {
-	if (len == 3 && !strncmp(ptr, "hit", 3)) {
-		match_assign(tag, lp, ptr, len);
-		return len;
-	} else if (len == 4 &&
-		   (!strncmp(ptr, "miss", 4) ||
-		    !strncmp(ptr, "pass", 4))) {
-		match_assign(tag, lp, "miss", 4);
-		return 4;
-	}
-
-	return 0;
-}
-
-static int parse_handling (const struct tag *tag, struct logline *lp,
+/* The VCL_call is used for several info; this function matches the only
+ * ones that varnishkafka cares about and discards the other ones.
+ */
+static int parse_vcl_handling (const struct tag *tag, struct logline *lp,
 			   const char *ptr, int len) {
-	if ((len == 3 && !strncmp(ptr, "hit", 3)) ||
-	    (len == 4 && (!strncmp(ptr, "miss", 4) ||
-			  !strncmp(ptr, "pass", 4)))) {
+	if ((len == 3 && !strncmp(ptr, "HIT", 3)) ||
+	    (len == 4 && (!strncmp(ptr, "MISS", 4) ||
+			  !strncmp(ptr, "PASS", 4)))) {
 		match_assign(tag, lp, ptr, len);
 		return len;
 	}
@@ -783,18 +756,23 @@ static int parse_seq (const struct tag *tag, struct logline *lp,
 
 static int parse_DT (const struct tag *tag, struct logline *lp,
 		     const char *ptr, int len) {
-	double start, stop;
 
-	if (sscanf(strndupa(ptr, len), "%*d %lf %lf %*d.%*d %*s",
-		   &start, &stop) != 2)
-			return 0;
-	if (tag->fmt->id == (int)'D')
-		return scratch_printf(tag, lp, "%.0f",
-				      (stop-start) * 1000000.0f);
-	else if (tag->fmt->id == (int)'T')
-		return scratch_printf(tag, lp, "%i", (int)(stop-start));
-	else
+	/* SLT_Timestamp logs timing info in ms */
+	double time_taken_ms;
+
+	/* ptr points to the original tag string, so we
+	 * need to extract the double field needed
+	 */
+	if (!(time_taken_ms = atof(strndupa(ptr, len))))
 		return 0;
+
+	if (tag->fmt->id == (int)'D') {
+		return scratch_printf(tag, lp, "%.0f", time_taken_ms * 1000000.0f);
+	} else if (tag->fmt->id == (int)'T') {
+		return scratch_printf(tag, lp, "%f", time_taken_ms);
+	} else {
+		return 0;
+	}
 }
 
 
@@ -885,11 +863,11 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 		/* A formatter may be backed by multiple tags.
 		 * The first matching tag observed in the log will be used. */
 		struct {
-			/* VSL_S_CLIENT or VSL_S_BACKEND, or both */
+			/* VSL_CLIENTMARKER or VSL_BACKENDMARKER, or both */
 			int spec;
 			/* The SLT_.. tag id */
 			int tag;
-			/* For "Name: Value" tags (such as SLT_RxHeader),
+			/* For "Name: Value" tags (such as SLT_RespHeader),
 			 * this is the "Name" part. */
 			const char *var;
 			/* Special handling for non-name-value vars such as
@@ -913,88 +891,110 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 
 	} map[256] = {
 		/* Indexed by formatter character as
-		 * specified by varnishncsa(1) */
+		 * specified by varnishncsa(1).
+		 * Each formatter is associated with
+		 * the structure defined above; please
+		 * note that not all of the fields are mandatory!
+		 *
+		 * Important note: you can see the next
+		 * configurations as pipes. For example,
+		 * setting "SLT_Y, var: X, col:2, parser:foo
+		 * will allow you to match something with a
+		 * Varnish tag named SLT_Y, carrying a payload
+		 * like "X: a b c d e" selecting the second field
+		 * and passing it to a parser function
+		 * (for perf reason the field passed is pointer to
+		 * the start of the substring in the original payload
+		 * plus its length, keep it in mind when writing a parser).
+		 *
+		 */
 		['b'] = { {
-				{ VSL_S_CLIENT, SLT_Length },
-				{ VSL_S_BACKEND, SLT_RxHeader,
-				  var: "content-length" }
+				/* Size of response in bytes, with HTTP headers. */
+				{ VSL_CLIENTMARKER, SLT_ReqAcct, col: 5}
 			} },
 		['D'] = { {
-				{ VSL_S_CLIENT, SLT_ReqEnd,
-				  parser: parse_DT }
+				/* Time taken to serve the request (s) */
+				{ VSL_CLIENTMARKER, SLT_Timestamp,
+				  var: "Resp", col: 2,
+				  parser: parse_DT}
 			} },
 		['T'] = { {
-				{ VSL_S_CLIENT, SLT_ReqEnd,
-				  parser: parse_DT }
+				/* Time taken to serve the request (s) */
+				{ VSL_CLIENTMARKER, SLT_Timestamp,
+				  var: "Resp", col: 2,
+				  parser: parse_DT}
 			} },
 		['H'] = { {
-				{ VSL_S_CLIENT, SLT_RxProtocol },
-				{ VSL_S_BACKEND, SLT_TxProtocol },
+				/* The request protocol */
+				{ VSL_CLIENTMARKER, SLT_ReqProtocol },
 			}, def: "HTTP/1.0" },
 		['h'] = { {
-				{ VSL_S_CLIENT, SLT_ReqStart, col: 1 },
-				{ VSL_S_BACKEND, SLT_BackendOpen,
-				  parser: parse_BackendOpen }
+				/* Remote hostname (IP address) */
+				{ VSL_CLIENTMARKER, SLT_ReqStart, col:1},
 			} },
 		['i'] = { {
-				{ VSL_S_CLIENT, SLT_RxHeader },
+				/* Used as %{VARNAME}i.
+				 * The contents of VARNAME: header line(s)
+				 * in the request sent to the server.
+				 */
+				{ VSL_CLIENTMARKER, SLT_ReqHeader }
 			} },
 		['l'] = { {
-				{ VSL_S_CLIENT|VSL_S_BACKEND },
+				{ VSL_CLIENTMARKER }
 			}, def: conf.logname },
 		['m'] = { {
-				{ VSL_S_CLIENT, SLT_RxRequest },
-				{ VSL_S_BACKEND, SLT_TxRequest },
+				/* Request method (GET|POST|..) */
+				{ VSL_CLIENTMARKER, SLT_ReqMethod }
 			} },
 		['q'] = { {
-				{ VSL_S_CLIENT, SLT_RxURL, parser: parse_q },
-				{ VSL_S_BACKEND, SLT_TxURL, parser: parse_q },
+				/* The request query string */
+				{ VSL_CLIENTMARKER, SLT_ReqURL, parser: parse_q }
 			},  def: "" },
 		['o'] = { {
-				{ VSL_S_CLIENT, SLT_TxHeader },
+				/* Used as %{VARNAME}o.
+				 * The contents of VARNAME: header line(s)
+				 * in the response sent to the server.
+				 */
+				{ VSL_CLIENTMARKER, SLT_RespHeader }
 			} },
 		['s'] = { {
-				{ VSL_S_CLIENT, SLT_TxStatus },
-				{ VSL_S_BACKEND, SLT_RxStatus },
+				/* The response HTTP status */
+				{ VSL_CLIENTMARKER, SLT_RespStatus }
 			} },
 		['t'] = { {
-				{ VSL_S_CLIENT, SLT_ReqEnd,
-				  parser: parse_t, col: 3,
-				  tag_flags: TAG_F_NOVARMATCH },
-				{ VSL_S_BACKEND, SLT_RxHeader,
-				  var: "date", parser: parse_t,
-				  tag_flags: TAG_F_NOVARMATCH },
+				/* Time the request was received */
+				{ VSL_CLIENTMARKER, SLT_Timestamp,
+				  col: 2,
+				  var: "Start",
+				  parser: parse_t,
+				  tag_flags: TAG_F_NOVARMATCH }
 			} },
 		['U'] = { {
-				{ VSL_S_CLIENT, SLT_RxURL, parser: parse_U },
-				{ VSL_S_BACKEND, SLT_TxURL, parser: parse_U },
+				/* The URL path requested, not including any query string. */
+				{ VSL_CLIENTMARKER, SLT_ReqURL, parser: parse_U }
 			} },
 		['u'] = { {
-				{ VSL_S_CLIENT, SLT_RxHeader,
+				{ VSL_CLIENTMARKER, SLT_RespHeader,
 				  var: "authorization",
-				  parser: parse_auth_user },
-				{ VSL_S_BACKEND, SLT_TxHeader,
-				  var: "authorization",
-				  parser: parse_auth_user },
+				  parser: parse_auth_user }
 			} },
 		['x'] = { {
-				{ VSL_S_CLIENT, SLT_ReqEnd,
-				  fmtvar: "Varnish:time_firstbyte", col: 5 },
-				{ VSL_S_CLIENT, SLT_ReqEnd,
-				  fmtvar: "Varnish:xid", col: 1 },
-				{ VSL_S_CLIENT, SLT_VCL_call,
-				  fmtvar: "Varnish:hitmiss",
-				  parser: parse_hitmiss },
-				{ VSL_S_CLIENT, SLT_VCL_call,
+				/* Various Varnish related tags */
+				{ VSL_CLIENTMARKER, SLT_Timestamp,
+				  var: "Process",
+				  fmtvar: "Varnish:time_firstbyte", col: 2 },
+				{ VSL_CLIENTMARKER, SLT_Begin,
+				  fmtvar: "Varnish:xvid", col: 2 },
+				{ VSL_CLIENTMARKER, SLT_VCL_call,
 				  fmtvar: "Varnish:handling",
-				  parser: parse_handling },
-				{ VSL_S_CLIENT, SLT_VCL_Log,
+				  parser: parse_vcl_handling },
+				{ VSL_CLIENTMARKER, SLT_VCL_Log,
 				  fmtvar: "VCL_Log:*" },
 
 			} },
 		['n'] = { {
-				{ VSL_S_CLIENT|VSL_S_BACKEND, VSL_TAG__ONCE,
-				  parser: parse_seq },
+				{ VSL_CLIENTMARKER, VSL_TAG__ONCE,
+				  parser: parse_seq }
 			} },
 	};
 	/* Replace legacy formatters */
@@ -1759,32 +1759,46 @@ static int tag_match (struct logline *lp, int spec, enum VSL_tag_e tagid,
 	}
 
 	/* Request end: render the match string. */
-	if (tagid == SLT_ReqEnd)
+	if (tagid == SLT_End)
 		return 1;
 	else
 		return 0;
 }
 
 
+
 /**
- * VSL_Dispatch() callback called for each tag read from the VSL.
+ * A trasaction cursor (vsl.h) points to a list of tags associated with transaction id.
+ * This function parses the current tag pointed by the cursor.
  */
-static int parse_tag (void *priv, enum VSL_tag_e tag, unsigned id,
-		      unsigned len, unsigned spec, const char *ptr,
-		      uint64_t bitmap) {
+static int parse_tag (struct VSL_transaction *t, uint64_t bitmap)
+{
 	struct logline *lp;
 	int    is_complete = 0;
 
-	if (unlikely(!spec))
+	/* Data carried by the transaction's current cursor */
+	enum VSL_tag_e tag = VSL_TAG(t->c->rec.ptr);
+	const char * tag_data = VSL_CDATA(t->c->rec.ptr);
+	long vxid = VSL_ID(t->c->rec.ptr);
+
+	/* Avoiding VSL_LEN to prevent \0 termination char
+	 * to be counted causing \u0000 to be displayed in JSON
+	 * encodings.
+	 */
+	long len = strlen(tag_data);
+
+	if (unlikely((!VSL_CLIENT(t->c->rec.ptr) &&
+			(!VSL_BACKEND(t->c->rec.ptr)))))
 		return conf.pret;
 
-	if (0)
-		_DBG("[%u] #%-3i %-12s %c %.*s",
-		     id, tag, VSL_tags[tag],
-		     spec & VSL_S_CLIENT ? 'c' : 'b',
-		     len, ptr);
+	/* Used by the parser to map Varnish tags with output placeholders.
+	 * Currently VarnishKafka does not process backend tags (discarding the
+	 * related transactions) so this field is not really used anymore, but
+	 * it will be kept in case of future expansions.
+	 */
+	int spec = VSL_CLIENT(t->c->rec.ptr) ? VSL_CLIENTMARKER : VSL_BACKENDMARKER;
 
-	if (unlikely(!(lp = logline_get(id))))
+	if (unlikely(!(lp = logline_get(vxid))))
 		return -1;
 
 	/* Update bitfield of seen tags (-m regexp) */
@@ -1797,16 +1811,10 @@ static int parse_tag (void *priv, enum VSL_tag_e tag, unsigned id,
 	}
 
 	/* Accumulate matched tag content */
-	if (likely(!(is_complete = tag_match(lp, spec, tag, ptr, len))))
+	if (likely(!(is_complete = tag_match(lp, spec, tag, tag_data, len))))
 		return conf.pret;
 
-	/* Match tag regexp, if any */
-	if (conf.m_flag && !VSL_Matched(vd, lp->tags_seen)) {
-		logline_reset(lp);
-		return conf.pret;
-	}
-
-	/* Log line is complete: render & output */
+	/* Log line is complete: render & output (stdout or kafka) */
 	render_match(lp, ++conf.sequence_number);
 
 	/* clean up */
@@ -1829,6 +1837,35 @@ static int parse_tag (void *priv, enum VSL_tag_e tag, unsigned id,
 
 	return conf.pret;
 }
+
+
+/**
+ * VSL_Dispatch() callback called for each transaction group read from the VSL.
+ * A transaction is a collection of tags indicating actions performed by Varnish
+ * (see https://www.varnish-cache.org/docs/4.1/reference/vsl.html). The grouping
+ * used in varnish-kafka is by request, so for example each backend request triggered
+ * by a single client request will have a different transaction id (and tags) but
+ * will reference the same parent transaction (the main request).
+ */
+static int __match_proto__(VSLQ_dispatch_f) transaction_scribe (struct VSL_data *vsl,
+		struct VSL_transaction * const pt[], void *priv) {
+	struct VSL_transaction *t;
+	/* Loop through the transations of the grouping */
+	while ((t = *pt++)) {
+		/* loop through the tags */
+		uint64_t bitmap = 0;
+		while (VSL_Next(t->c) == 1) {
+			/* Only client requests are allowed */
+			if (t->type != VSL_t_req)
+				continue;
+			if (t->reason == VSL_r_esi)
+				continue;
+			parse_tag(t, bitmap);
+		}
+	}
+	return 0;
+}
+
 
 
 /**
@@ -1946,30 +1983,38 @@ static void usage (const char *argv0) {
 		"varnishkafka version %s\n"
 		"Varnish log listener with Apache Kafka producer support\n"
 		"\n"
-		"Usage: %s [VSL_ARGS] [-S <config-file>]\n"
+		" Usage: %s [-S <config-file>] [-n <varnishd instance>] "
+		" [-N VSM filename] [-q VSL query] [-D daemonize]\n"
 		"\n"
-		" VSL_ARGS are standard Varnish VSL arguments:\n"
-		"  %s\n"
-		"\n"
-		" The VSL_ARGS can also be set through the configuration file\n"
-		" with \"varnish.arg.<..> = <..>\"\n"
+		" Args can also be set through the configuration file "
+		" (check the default configuration file for examples).\n"
 		"\n"
 		" Default configuration file path: %s\n"
 		"\n",
 		VARNISHKAFKA_VERSION,
 		argv0,
-		VSL_USAGE,
 		VARNISHKAFKA_CONF_PATH);
 	exit(1);
 }
 
+
+void varnish_api_cleaning() {
+	if (conf.vslq)
+		VSLQ_Delete(&conf.vslq);
+
+	if (conf.vsl)
+		VSL_Delete(conf.vsl);
+
+	if (conf.vsm)
+		VSM_Delete(conf.vsm);
+
+}
 
 int main (int argc, char **argv) {
 	char errstr[4096];
 	char hostname[1024];
 	struct hostent *lh;
 	char c;
-	int r;
 	int i;
 
 	/*
@@ -2011,28 +2056,36 @@ int main (int argc, char **argv) {
 	lh = gethostbyname(hostname);
 	conf.logname = strdup(lh->h_name);
 
-
-	/* Create varnish shared memory handle */
-	vd = VSM_New();
-	VSL_Setup(vd);
-
 	/* Parse command line arguments */
-	while ((c = getopt(argc, argv, VSL_ARGS "hS:")) != -1) {
+	while ((c = getopt(argc, argv, "hS:N:Dq:n:")) != -1) {
 		switch (c) {
 		case 'h':
 			usage(argv[0]);
 			break;
 		case 'S':
+			/* varnish-kafka config filepath */
 			conf_file_path = optarg;
 			break;
-		case 'm':
-			conf.m_flag = 1;
-			/* FALLTHRU */
+		case 'N':
+			/* Open a specific shm file */
+			conf.N_flag = 1;
+			conf.N_flag_path = strdup(optarg);
+			break;
+		case 'D':
+			conf.daemonize = 1;
+			break;
+		case 'q':
+			/* VSLQ query */
+			conf.q_flag = 1;
+			conf.q_flag_query = strdup(optarg);
+			break;
+		case 'n':
+			/* name of varnishd instance to use */
+			conf.n_flag = 1;
+			conf.n_flag_name = strdup(optarg);
+			break;
 		default:
-			if ((r = VSL_Arg(vd, c, optarg)) == 0)
-				usage(argv[0]);
-			else if (r == -1)
-				exit(1); /* VSL_Arg prints error message */
+			usage(argv[0]);
 			break;
 		}
 	}
@@ -2043,9 +2096,6 @@ int main (int argc, char **argv) {
 
 	if (!conf.topic)
 		usage(argv[0]);
-
-	/* Always include client communication (-c) */
-	VSL_Arg(vd, 'c', NULL);
 
 	/* Set up syslog */
 	if (conf.log_to & VK_LOG_SYSLOG)
@@ -2112,13 +2162,6 @@ int main (int argc, char **argv) {
 	if (conf.log_level >= 7)
 		tag_dump();
 
-	/* Open the log file */
-	if (VSL_Open(vd, 1) != 0) {
-		vk_log("VSLOPEN", LOG_ERR, "Failed to open Varnish VSL: %s\n",
-		       strerror(errno));
-		exit(1);
-	}
-
 	/* Prepare logline cache */
 	loglines_init();
 
@@ -2152,31 +2195,106 @@ int main (int argc, char **argv) {
 			       conf.topic, strerror(errno));
 			exit(1);
 		}
+
+	}
+
+	/* Varnish VSL declaration (vsm and vsl structures) is done
+	 * in the header file because used in both config.c and varnishkafka.c
+	 */
+	conf.vsl = VSL_New();
+	struct VSL_cursor *vsl_cursor;
+	conf.vsm = VSM_New();
+
+	/* Check if the user wants to open a specific SHM File (-N) or
+	 * a SHM file related to a specific varnishd instance (-n)
+	 */
+	if (conf.N_flag) {
+		if (!VSM_N_Arg(conf.vsm, conf.N_flag_path)) {
+			vk_log("VSM_N_arg", LOG_ERR, "Failed to open %s: %s",
+					conf.N_flag_path, VSM_Error(conf.vsm));
+			varnish_api_cleaning();
+			exit(1);
+		}
+	} else if (conf.n_flag) {
+		if (!VSM_n_Arg(conf.vsm, conf.n_flag_name)) {
+			vk_log("VSM_n_arg", LOG_ERR, "Failed to open shm for varnishd %s: %s",
+					conf.n_flag_name, VSM_Error(conf.vsm));
+			varnish_api_cleaning();
+			exit(1);
+		}
+	}
+
+	if (VSM_Open(conf.vsm) < 0) {
+		vk_log("VSM_OPEN", LOG_ERR, "Failed to open Varnish VSL: %s\n", VSM_Error(conf.vsm));
+		varnish_api_cleaning();
+		exit(1);
+	}
+	vsl_cursor = VSL_CursorVSM(conf.vsl, conf.vsm, VSL_COPT_TAIL | VSL_COPT_BATCH);
+	if (vsl_cursor == NULL) {
+		vk_log("VSL_CursorVSM", LOG_ERR, "Failed to obtain a cursor for the SHM log: %s\n",
+				VSL_Error(conf.vsl));
+		varnish_api_cleaning();
+		exit(1);
+	}
+
+	/* Setting VSLQ query */
+	if (conf.q_flag) {
+		conf.vslq = VSLQ_New(conf.vsl, &vsl_cursor, VSL_g_request, conf.q_flag_query);
+	} else {
+		conf.vslq = VSLQ_New(conf.vsl, &vsl_cursor, VSL_g_request, NULL);
+	}
+	if (conf.vslq == NULL) {
+		vk_log("VSLQ_NEW", LOG_ERR, "Failed to instantiate the VSL query: %s\n",
+				VSL_Error(conf.vsl));
+		varnish_api_cleaning();
+		exit(1);
 	}
 
 	/* Main dispatcher loop depending on outputter */
 	conf.run = 1;
 	conf.pret = 0;
 
-	if (outfunc == out_kafka) {
-		/* Kafka outputter */
+	/* time struct to sleep for 10ms */
+	struct timespec wait_for;
+	wait_for.tv_sec = 0;
+	wait_for.tv_nsec = 10000000L;
+	int dispatch_status = 0;
 
-		while (conf.run && VSL_Dispatch(vd, parse_tag, NULL) >= 0)
+	while (conf.run) {
+		dispatch_status = VSLQ_Dispatch(conf.vslq, transaction_scribe, NULL);
+
+		/* Nothing to read from the shm handle, sleeping */
+		if (dispatch_status == 0)
+			nanosleep(&wait_for, NULL);
+
+		/* Varnish log abandoned or overrun, closing gracefully */
+		else if (dispatch_status <= -2) {
+			vk_log("VSLQ_Dispatch", LOG_ERR, "Varnish Log abandoned or overrun.");
+			break;
+		}
+		/* EOF from the Varnish Log, closing gracefully */
+		else if (dispatch_status == -1) {
+			vk_log("VSLQ_Dispatch", LOG_ERR, "Varnish Log EOF.");
+			break;
+		}
+
+		if (outfunc == out_kafka)
 			rd_kafka_poll(rk, 0);
+	}
 
-		/* Run until all kafka messages have been delivered
-		 * or we are stopped again */
-		conf.run = 1;
+	/* Run until all kafka messages have been delivered
+	* or we are stopped again */
+	conf.run = 1;
 
-		while (conf.run && rd_kafka_outq_len(rk) > 0)
+	if (outfunc == out_kafka) {
+		/* Check if all the messages have been delivered
+		 * to Kafka to update statistics.
+		 */
+		while (conf.run && (rd_kafka_outq_len(rk) > 0))
 			rd_kafka_poll(rk, 100);
 
+		/* Kafka clean-up */
 		rd_kafka_destroy(rk);
-	} else {
-		/* Stdout outputter */
-
-		while (conf.run && VSL_Dispatch(vd, parse_tag, NULL) >= 0)
-			;
 	}
 
 	loglines_term();
@@ -2192,6 +2310,7 @@ int main (int argc, char **argv) {
 
 	rate_limiters_rollover(time(NULL));
 
-	VSM_Close(vd);
+	varnish_api_cleaning();
+
 	exit(0);
 }

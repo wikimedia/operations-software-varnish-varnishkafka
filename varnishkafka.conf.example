@@ -202,27 +202,16 @@ log.kafka.msg.error = true
 daemonize = false
 
 
-#######################################################################
-#                                                                     #
-# Standard varnish VSL command line arguments                         #
-#                                                                     #
-# Syntax:                                                             #
-#  varnish.arg.<c> = <value>, where <c> is a command line option.     #
-#                                                                     #
-# See varnishncsa(1) and varnishlog(1) for valid options.             #
-#                                                                     #
-#######################################################################
+# Varnish-related configuration options:
 
-# -m tag:regex
-varnish.arg.m = RxRequest:^(?!PURGE$)
-
-# Examples:
-# -C: ignore case when matching regex
-# Non-value arguments need a dummy value to pass parsing, such as 'true'.
-#varnish.arg.C = true
+# -q VSLQ query (https://www.varnish-cache.org/docs/4.1/reference/vsl-query.html)
+# varnish.arg.q = not ReqHeader:Content-type
 
 # -n: varnishd instance to get logs from.
-#varnish.arg.n = frontend
+# varnish.arg.n = frontend
+
+# -N: VSM filename to read logs from.
+# varnish.arg.N = /this/is/a/path
 
 
 #######################################################################

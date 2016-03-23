@@ -16,10 +16,11 @@ endif
 
 CFLAGS  += -DVARNISHKAFKA_VERSION=\"$(VER)\"
 CFLAGS  += -DVARNISHKAFKA_CONF_PATH=\"$(CFPATH)\"
+CFLAGS  += -I/usr/include/varnish/
 
-CFLAGS	+= -Wall -Werror -O2 -g 
+CFLAGS  += -Wall -Werror -O2
 LIBS	+= -lyajl
-LIBS    += -lrdkafka -lvarnishapi -lpthread -lrt -lz
+LIBS    += -lrdkafka -lvarnishapi -lpthread -lrt -lz -lm
 
 
 all:
