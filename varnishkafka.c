@@ -5,24 +5,24 @@
  * Copyright (c) 2013 Magnus Edenhill <vk@edenhill.se>
  *
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met: 
- * 
+ * modification, are permitted provided that the following conditions are met:
+ *
  * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer. 
+ *    this list of conditions and the following disclaimer.
  * 2. Redistributions in binary form must reproduce the above copyright notice,
  *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution. 
- * 
+ *    and/or other materials provided with the distribution.
+ *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE 
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE 
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE 
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR 
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF 
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS 
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN 
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
  * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
@@ -57,7 +57,6 @@
 #include "varnishkafka.h"
 #include "base64.h"
 
-
 /* Kafka handle */
 static rd_kafka_t *rk;
 /* Kafka topic */
@@ -67,7 +66,6 @@ static rd_kafka_topic_t *rkt;
 struct VSM_data *vd;
 
 const char *conf_file_path = VARNISHKAFKA_CONF_PATH;
-
 
 static const char *fmt_conf_names[] = {
 	[FMT_CONF_MAIN] = "Main",
@@ -88,6 +86,7 @@ static struct {
 static int logline_cnt = 0; /* Current number of loglines in memory */
 
 static void logrotate(void);
+
 
 /**
  * Counters
@@ -239,8 +238,9 @@ static int format_add (struct fmt_conf *fconf, int fmtr,
 		fmt->var = malloc(varlen+1);
 		memcpy((char *)fmt->var, var, varlen);
 		((char *)fmt->var)[varlen] = '\0';
-	} else
+	} else {
 		fmt->var = NULL;
+	}
 
 	if (!def)
 		def = "-";
@@ -295,12 +295,13 @@ static int tag_add (struct fmt_conf *fconf, struct fmt *fmt,
 		tag->varlen = varlen;
 		memcpy(tag->var, var, varlen);
 		tag->var[varlen] = '\0';
-	} else
+	} else {
 		tag->var = NULL;
+	}
 
 	return 0;
 }
-		     
+
 
 
 static inline void match_assign0 (const struct tag *tag, struct logline *lp,
@@ -334,7 +335,7 @@ static inline void scratch_rewind (struct logline *lp, const char *ptr,
 
 
 /**
- * Allocate persistent memory space ('len' bytes) in 
+ * Allocate persistent memory space ('len' bytes) in
  * logline 'lp's scratch buffer.
  */
 static inline char *scratch_alloc (const struct tag *tag, struct logline *lp,
@@ -451,13 +452,11 @@ static inline int scratch_write_escaped (const struct tag *tag,
 		if (unlikely((out = map[(int)*s]) != NULL)) {
 			/* Escape from 'map' */
 			outlen = 2;
-
 		} else if (unlikely(!isprint(*s))) {
 			/* Escape non-printables as \<octal> */
 			sprintf(tmp, "\%04o", (int)*s);
 			out = tmp;
 			outlen = 5;
-
 		} else {
 			/* No escaping */
 			out = s;
@@ -465,9 +464,9 @@ static inline int scratch_write_escaped (const struct tag *tag,
 
 		assert(d + outlen < dstend);
 
-		if (likely(outlen == 1))
+		if (likely(outlen == 1)) {
 			*(d++) = *out;
-		else {
+		} else {
 			memcpy(d, out, outlen);
 			d += outlen;
 		}
@@ -544,7 +543,6 @@ static void match_assign (const struct tag *tag, struct logline *lp,
 			scratch_rewind(lp, optr, len);
 		}
 		scratch_write_escaped(tag, lp, ptr, len);
-
 	} else {
 		if (conf.datacopy) /* copy volatile data */
 			scratch_write0(tag, lp, ptr, len);
@@ -576,7 +574,7 @@ static char *strnchrs (const char *s, int len, const char *match) {
 	char map[256] = {};
 	while (*match)
 		map[(int)*(match++)] = 1;
-	
+
 	while (s < end) {
 		if (map[(int)*s])
 			return (char *)s;
@@ -585,7 +583,7 @@ static char *strnchrs (const char *s, int len, const char *match) {
 
 	return NULL;
 }
-	
+
 
 /**
  * Splits 'ptr' (with length 'len') by delimiter 'delim' and assigns
@@ -630,7 +628,6 @@ static int column_get (int col, char delim, const char *ptr, int len,
 
 
 /**
- *
  * Misc parsers for formatters
  *
  */
@@ -649,13 +646,17 @@ static int parse_BackendOpen (const struct tag *tag, struct logline *lp,
 	match_assign(tag, lp, s, slen);
 
 	return 0;
-}	
+}
 
+/**
+ * Parse a URL (without query string) retrieved from a tag's payload.
+ */
 static int parse_U (const struct tag *tag, struct logline *lp,
 		    const char *ptr, int len) {
 	const char *qs;
 	int slen = len;
 
+	// Remove the query string if present
 	if ((qs = strnchr(ptr, len, '?')))
 		slen = (int)(qs - ptr);
 
@@ -663,6 +664,9 @@ static int parse_U (const struct tag *tag, struct logline *lp,
 	return slen;
 }
 
+/**
+ * Parse a query-string retrieved from a tag's payload.
+ */
 static int parse_q (const struct tag *tag, struct logline *lp,
 		    const char *ptr, int len) {
 	const char *qs;
@@ -677,6 +681,9 @@ static int parse_q (const struct tag *tag, struct logline *lp,
 	return slen;
 }
 
+/**
+ * Parse a timestamp retrieved from a tag's payload.
+ */
 static int parse_t (const struct tag *tag, struct logline *lp,
 		    const char *ptr, int len) {
 	struct tm tm;
@@ -693,7 +700,6 @@ static int parse_t (const struct tag *tag, struct logline *lp,
 		if (unlikely(!strptime(strndupa(ptr, len),
 				       "%a, %d %b %Y %T", &tm)))
 			return 0;
-
 	} else {
 		time_t t = strtoul(ptr, NULL, 10);
 		localtime_r(&t, &tm);
@@ -750,8 +756,8 @@ static int parse_hitmiss (const struct tag *tag, struct logline *lp,
 		match_assign(tag, lp, ptr, len);
 		return len;
 	} else if (len == 4 &&
-		 (!strncmp(ptr, "miss", 4) ||
-		  !strncmp(ptr, "pass", 4))) {
+		   (!strncmp(ptr, "miss", 4) ||
+		    !strncmp(ptr, "pass", 4))) {
 		match_assign(tag, lp, "miss", 4);
 		return 4;
 	}
@@ -771,24 +777,24 @@ static int parse_handling (const struct tag *tag, struct logline *lp,
 }
 
 static int parse_seq (const struct tag *tag, struct logline *lp,
-		       const char *ptr, int len) {
+		      const char *ptr, int len) {
 	return scratch_printf(tag, lp, "%"PRIu64, conf.sequence_number);
 }
 
 static int parse_DT (const struct tag *tag, struct logline *lp,
-                     const char *ptr, int len) {
-        double start, stop;
+		     const char *ptr, int len) {
+	double start, stop;
 
-        if (sscanf(strndupa(ptr, len), "%*d %lf %lf %*d.%*d %*s",
-                   &start, &stop) != 2)
-                return 0;
-        if (tag->fmt->id == (int)'D')
-                return scratch_printf(tag, lp, "%.0f",
-                                      (stop-start) * 1000000.0f);
-        else if (tag->fmt->id == (int)'T')
-                return scratch_printf(tag, lp, "%i", (int)(stop-start));
-        else
-                return 0;
+	if (sscanf(strndupa(ptr, len), "%*d %lf %lf %*d.%*d %*s",
+		   &start, &stop) != 2)
+			return 0;
+	if (tag->fmt->id == (int)'D')
+		return scratch_printf(tag, lp, "%.0f",
+				      (stop-start) * 1000000.0f);
+	else if (tag->fmt->id == (int)'T')
+		return scratch_printf(tag, lp, "%i", (int)(stop-start));
+	else
+		return 0;
 }
 
 
@@ -842,7 +848,7 @@ static char *string_replace_arr (const char *in, const char **arr) {
 				out = realloc(out, outsize);
 				assert(out);
 			}
-			
+
 			memcpy(out+of, to, tolen);
 			of += tolen;
 			s--;
@@ -888,7 +894,7 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 			const char *var;
 			/* Special handling for non-name-value vars such as
 			 * %{Varnish:handling}x. fmtvar is "Varnish:handling" */
-			const char *fmtvar; 
+			const char *fmtvar;
 			/* Column to extract:
 			 * 0 for entire string, else 1, 2, .. */
 			int col;
@@ -900,7 +906,7 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 			/* Optional tag->flags */
 			int tag_flags;
 		} f[4+1]; /* increase size when necessary (max used size + 1) */
-		
+
 		/* Default string if no matching tag was found or all
 		 * parsers failed, defaults to "-". */
 		const char *def;
@@ -913,14 +919,14 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 				{ VSL_S_BACKEND, SLT_RxHeader,
 				  var: "content-length" }
 			} },
-                ['D'] = { {
-                                { VSL_S_CLIENT, SLT_ReqEnd,
-                                  parser: parse_DT }
-                        } },
-                ['T'] = { {
-                                { VSL_S_CLIENT, SLT_ReqEnd,
-                                  parser: parse_DT }
-                        } },
+		['D'] = { {
+				{ VSL_S_CLIENT, SLT_ReqEnd,
+				  parser: parse_DT }
+			} },
+		['T'] = { {
+				{ VSL_S_CLIENT, SLT_ReqEnd,
+				  parser: parse_DT }
+			} },
 		['H'] = { {
 				{ VSL_S_CLIENT, SLT_RxProtocol },
 				{ VSL_S_BACKEND, SLT_TxProtocol },
@@ -930,7 +936,7 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 				{ VSL_S_BACKEND, SLT_BackendOpen,
 				  parser: parse_BackendOpen }
 			} },
-		['i'] = { { 
+		['i'] = { {
 				{ VSL_S_CLIENT, SLT_RxHeader },
 			} },
 		['l'] = { {
@@ -944,7 +950,7 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 				{ VSL_S_CLIENT, SLT_RxURL, parser: parse_q },
 				{ VSL_S_BACKEND, SLT_TxURL, parser: parse_q },
 			},  def: "" },
-		['o'] = { { 
+		['o'] = { {
 				{ VSL_S_CLIENT, SLT_TxHeader },
 			} },
 		['s'] = { {
@@ -971,7 +977,7 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 				  var: "authorization",
 				  parser: parse_auth_user },
 			} },
-		['x'] = { { 
+		['x'] = { {
 				{ VSL_S_CLIENT, SLT_ReqEnd,
 				  fmtvar: "Varnish:time_firstbyte", col: 5 },
 				{ VSL_S_CLIENT, SLT_ReqEnd,
@@ -1026,12 +1032,13 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 
 		/* ".....%... "
 		 *  ^---^  add this part as verbatim string */
-		if (s > t)
+		if (s > t) {
 			if (format_add(fconf, 0,
 				       NULL, 0,
 				       t, (int)(s - t),
 				       0, errstr, errstr_size) == -1)
 				return -1;
+		}
 
 		begin = s;
 		s++;
@@ -1100,10 +1107,11 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 					q++;
 
 					if ((q2 = strnchrs(q, (int)(b-q2-1),
-							   "@?!")))
+							   "@?!"))) {
 						qlen = (int)(q2-q);
-					else
+					} else {
 						qlen = (int)(b-q);
+					}
 
 					switch (*(q-1))
 					{
@@ -1120,12 +1128,12 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 					case '!':
 						/* Options */
 						if (!strncasecmp(q, "escape",
-								 qlen))
+								 qlen)) {
 							flags |= FMT_F_ESCAPE;
-						else if (!strncasecmp(q, "num",
-								      qlen))
+						} else if (!strncasecmp(q, "num",
+								      qlen)) {
 							type = FMT_TYPE_NUMBER;
-						else {
+						} else {
 							snprintf(errstr,
 								 errstr_size,
 								 "Unknown "
@@ -1141,9 +1149,9 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 					}
 
 				} while ((q = q2));
-
-			} else
-				varlen = (int)(b-a);			
+			} else {
+				varlen = (int)(b-a);
+			}
 
 			s = b+1;
 		}
@@ -1183,7 +1191,7 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 			if (map[(int)*s].f[i].tag == 0)
 				continue;
 
-			/* mapping has fmtvar specified, make sure it 
+			/* mapping has fmtvar specified, make sure it
 			 * matches the format's variable. */
 			if (map[(int)*s].f[i].fmtvar) {
 				const char *iswc;
@@ -1214,8 +1222,6 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 					/* set format var to "..:<key>" */
 					var = var + fvlen;
 					varlen -= fvlen;
-
-
 				} else {
 					/* Non-wildcard definition.
 					 * Var must match exactly. */
@@ -1243,22 +1249,21 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 				return -1;
 		}
 
-
 		t = ++s;
 	}
 
 	/* "..%x....."
 	 *      ^---^  add this part as verbatim string */
-	if (s > t)
+	if (s > t) {
 		if (format_add(fconf, 0, NULL, 0,
 			       t, (int)(s - t), 0,
 			       errstr, errstr_size) == -1)
 			return -1;
+	}
 
 	/* Dump parsed format string. */
 	if (conf.log_level >= 7)
 		fmt_dump(fconf);
-
 
 	if (fconf->fmt_cnt == 0) {
 		snprintf(errstr, errstr_size,
@@ -1502,10 +1507,10 @@ static void render_match_json (struct fmt_conf *fconf, struct logline *lp) {
 		}
 
 		/* Field name */
-		if (likely(fconf->fmt[i].name != NULL))
+		if (likely(fconf->fmt[i].name != NULL)) {
 			yajl_gen_string(g, (unsigned char *)fconf->fmt[i].name,
 					fconf->fmt[i].namelen);
-		else {
+		} else {
 			char name = (char)fconf->fmt[i].id;
 			yajl_gen_string(g, (unsigned char *)&name, 1);
 		}
@@ -1594,7 +1599,7 @@ static void logline_reset (struct logline *lp) {
 		lp->tmpbuf = tmpbuf->next;
 		free(tmpbuf);
 	}
-	
+
 	if (lp->key) {
 		free(lp->key);
 		lp->key = NULL;
@@ -1642,8 +1647,9 @@ static inline struct logline *logline_get (unsigned int id) {
 			return lp;
 		} else if (loglines[hkey].cnt > conf.loglines_hmax &&
 			   lp->tags_seen &&
-			   (!oldest || lp->t_last < oldest->t_last))
+			   (!oldest || lp->t_last < oldest->t_last)) {
 			oldest = lp;
+		}
 	}
 
 	/* Cache miss */
@@ -1682,8 +1688,6 @@ static inline struct logline *logline_get (unsigned int id) {
 
 
 
-
-
 /**
  * Given a single tag 'tagid' with its data 'ptr' and 'len';
  * try to match it to the registered format tags.
@@ -1707,22 +1711,23 @@ static int tag_match (struct logline *lp, int spec, enum VSL_tag_e tagid,
 		if (!(tag->spec & spec))
 			continue;
 
-		if (tag->var && !(tag->flags & TAG_F_NOVARMATCH)) {
+		if ((tag->var) && !(tag->flags & TAG_F_NOVARMATCH)) {
 			const char *t;
-			
+
 			/* Variable match ("Varname: value") */
 			if (!(t = strnchr(ptr, len, ':')))
 				continue;
-			
+
 			if (tag->varlen != (int)(t-ptr) ||
 			    strncasecmp(ptr, tag->var, tag->varlen))
 				continue;
 
 			if (likely(len > tag->varlen + 1 /* ":" */)) {
 				ptr2 = t+1; /* ":" */
-                                /* Strip leading whitespaces */
-                                while (*ptr2 == ' ' && ptr2 < ptr+len)
-                                        ptr2++;
+				/* Strip leading whitespaces */
+				while (*ptr2 == ' ' && ptr2 < ptr+len)
+					ptr2++;
+
 				len2 = len - (int)(ptr2-ptr);
 			} else {
 				/* Empty value */
@@ -1736,15 +1741,16 @@ static int tag_match (struct logline *lp, int spec, enum VSL_tag_e tagid,
 		}
 
 		/* Get specified column if specified. */
-		if (tag->col)
-			if (!column_get(tag->col, ' ', ptr2, len2,
-					&ptr2, &len2))
+		if (tag->col) {
+			if (!column_get(tag->col, ' ', ptr2, len2, &ptr2, &len2)) {
 				continue;
+			}
+		}
 
 		if (tag->parser) {
 			/* Pass value to parser which will assign it. */
 			tag->parser(tag, lp, ptr2, len2);
-			
+
 		} else {
 			/* Fallback to verbatim field. */
 			match_assign(tag, lp, ptr2, len2);
@@ -1799,7 +1805,7 @@ static int parse_tag (void *priv, enum VSL_tag_e tag, unsigned id,
 		logline_reset(lp);
 		return conf.pret;
 	}
-	
+
 	/* Log line is complete: render & output */
 	render_match(lp, ++conf.sequence_number);
 
@@ -1847,6 +1853,7 @@ void vk_log0 (const char *func, const char *file, int line,
 		fprintf(stderr, "%%%i %s: %s\n", level, facility, buf);
 }
 
+
 /**
  * Appends a formatted string to the conf.stats_fp file.
  * conf.stats_fp is configured using the log.statistics.file property.
@@ -1875,13 +1882,14 @@ void vk_log_stats(const char *fmt, ...) {
 
 	/* flush stats_fp to make sure valid JSON data
 	   (e.g. full lines with closing object brackets)
-       is written to disk */
+	   is written to disk */
 	if (fflush(conf.stats_fp)) {
 		vk_log("STATS", LOG_ERR,
 			"Failed to fflush log.statistics.file %s: %s",
 			conf.stats_file, strerror(errno));
 	}
 }
+
 
 /**
  * Closes and reopens any open logging file pointers.
@@ -1899,6 +1907,7 @@ static void logrotate(void) {
 
 	conf.need_logrotate = 0;
 }
+
 
 /**
  * Hangup signal handler.
@@ -1991,7 +2000,7 @@ int main (int argc, char **argv) {
 
 	for (i = 0 ; i < FMT_CONF_NUM ; i++)
 		conf.fconf[i].fid = i;
-		
+
 	conf.format[FMT_CONF_MAIN] = "%l %n %t %{Varnish:time_firstbyte}x %h "
 		"%{Varnish:handling}x/%s %b %m http://%{Host}i%U%q - - "
 		"%{Referer}i %{X-Forwarded-For}i %{User-agent}i";
@@ -2059,8 +2068,7 @@ int main (int argc, char **argv) {
 
 		/* Install SIGHUP handler for logrotating stats_fp. */
 		signal(SIGHUP, sig_hup);
-}
-
+	}
 
 	/* Termination signal handlers */
 	signal(SIGINT, sig_term);
@@ -2164,13 +2172,11 @@ int main (int argc, char **argv) {
 			rd_kafka_poll(rk, 100);
 
 		rd_kafka_destroy(rk);
-
 	} else {
 		/* Stdout outputter */
 
 		while (conf.run && VSL_Dispatch(vd, parse_tag, NULL) >= 0)
 			;
-
 	}
 
 	loglines_term();
@@ -2181,6 +2187,7 @@ int main (int argc, char **argv) {
 		fclose(conf.stats_fp);
 		conf.stats_fp = NULL;
 	}
+
 	free(conf.stats_file);
 
 	rate_limiters_rollover(time(NULL));
