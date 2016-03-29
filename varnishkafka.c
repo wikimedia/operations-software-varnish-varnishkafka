@@ -66,15 +66,12 @@ static rd_kafka_t *rk;
 /* Kafka topic */
 static rd_kafka_topic_t *rkt;
 
-const char *conf_file_path = VARNISHKAFKA_CONF_PATH;
+static const char *conf_file_path = VARNISHKAFKA_CONF_PATH;
 
 static const char *fmt_conf_names[] = {
 	[FMT_CONF_MAIN] = "Main",
 	[FMT_CONF_KEY]  = "Key"
 };
-
-/* logline accumulator reused across log transactions */
-struct logline *lp = NULL;
 
 static void logrotate(void);
 
@@ -152,7 +149,7 @@ static char *const_string_add (const char *in, int inlen) {
 /**
  * Print parsed format string: formatters
  */
-static __attribute__((unused)) void fmt_dump (const struct fmt_conf *fconf) {
+static UNUSED void fmt_dump (const struct fmt_conf *fconf) {
 	int i;
 
 	_DBG("%s %i/%i formats:",
@@ -172,7 +169,7 @@ static __attribute__((unused)) void fmt_dump (const struct fmt_conf *fconf) {
 /**
  * Print parser format string: tags
  */
-static __attribute__((unused)) void tag_dump (void) {
+static UNUSED void tag_dump (void) {
 	int i;
 
 	_DBG("Tags:");
@@ -203,8 +200,7 @@ static __attribute__((unused)) void tag_dump (void) {
 static int format_add (struct fmt_conf *fconf, int fmtr,
 		       const char *var, ssize_t varlen,
 		       const char *def, ssize_t deflen,
-		       int flags,
-		       char *errstr, size_t errstr_size) {
+		       int flags) {
 	struct fmt *fmt;
 
 	if (fconf->fmt_cnt >= fconf->fmt_size) {
@@ -222,10 +218,10 @@ static int format_add (struct fmt_conf *fconf, int fmtr,
 	if (var) {
 		if (varlen == -1)
 			varlen = strlen(var);
-
-		fmt->var = malloc(varlen+1);
-		memcpy((char *)fmt->var, var, varlen);
-		((char *)fmt->var)[varlen] = '\0';
+		char* fvar = malloc(varlen+1);
+		memcpy(fvar, var, varlen);
+		fvar[varlen] = '\0';
+		fmt->var = fvar;
 	} else {
 		fmt->var = NULL;
 	}
@@ -254,8 +250,7 @@ static int tag_add (struct fmt_conf *fconf, struct fmt *fmt,
 		    int col,
 		    int (*parser) (const struct tag *tag, struct logline *lp,
 				   const char *ptr, int len),
-		    int tag_flags,
-		    char *errstr, size_t errstr_size) {
+		    int tag_flags) {
 	struct tag *tag;
 
 	tag = calloc(1, sizeof(*tag));
@@ -326,8 +321,7 @@ static inline void scratch_rewind (struct logline *lp, const char *ptr,
  * Allocate persistent memory space ('len' bytes) in
  * logline 'lp's scratch buffer.
  */
-static inline char *scratch_alloc (const struct tag *tag, struct logline *lp,
-				   int len) {
+static inline char *scratch_alloc (struct logline *lp, int len) {
 	char *ptr;
 
 	if (unlikely(lp->sof + len > conf.scratch_size)) {
@@ -377,7 +371,7 @@ static inline int scratch_write (const struct tag *tag, struct logline *lp,
 				 const char *src, int len) {
 	char *dst;
 
-	dst = scratch_alloc(tag, lp, len);
+	dst = scratch_alloc(lp, len);
 	memcpy(dst, src, len);
 
 	match_assign(tag, lp, dst, len);
@@ -393,7 +387,7 @@ static inline int scratch_write0 (const struct tag *tag, struct logline *lp,
 				 const char *src, int len) {
 	char *dst;
 
-	dst = scratch_alloc(tag, lp, len);
+	dst = scratch_alloc(lp, len);
 
 	memcpy(dst, src, len);
 
@@ -427,7 +421,7 @@ static inline int scratch_write_escaped (const struct tag *tag,
 
 	/* Allocate initial space for escaped string.
 	 * The maximum expansion size per character is 5 (octal coding). */
-	dst = scratch_alloc(tag, lp, len * 5);
+	dst = scratch_alloc(lp, len * 5);
 	dstend = dst + (len * 5);
 
 	s = src;
@@ -475,6 +469,7 @@ static inline int scratch_write_escaped (const struct tag *tag,
  * Helper that allocates enough space in the scratch buffer to fit
  * the string produced by 'fmt...'.
  */
+__attribute__((format(printf,3,4)))
 static inline int scratch_printf (const struct tag *tag, struct logline *lp,
 				  const char *fmt, ...) {
 	va_list ap, ap2;
@@ -486,7 +481,7 @@ static inline int scratch_printf (const struct tag *tag, struct logline *lp,
 	r = vsnprintf(NULL, 0, fmt, ap2);
 	va_end(ap2);
 
-	dst = scratch_alloc(tag, lp, r+1);
+	dst = scratch_alloc(lp, r+1);
 
 	va_start(ap, fmt);
 	vsnprintf(dst, r+1, fmt, ap);
@@ -496,13 +491,6 @@ static inline int scratch_printf (const struct tag *tag, struct logline *lp,
 
 	return r;
 }
-
-static inline int scratch_printf (const struct tag *tag, struct logline *lp,
-				  const char *fmt, ...)
-	__attribute__((format(printf,3,4)));
-
-
-
 
 static inline void match_assign0 (const struct tag *tag, struct logline *lp,
 				  const char *ptr, int len) {
@@ -541,11 +529,22 @@ static void match_assign (const struct tag *tag, struct logline *lp,
 
 
 
-static char *strnchr (const char *s, int len, int c) {
+static char *strnchr_noconst (char *s, int len, int c) {
+	char *end = s + len;
+	while (s < end) {
+		if (*s == c)
+			return s;
+		s++;
+	}
+
+	return NULL;
+}
+
+static const char *strnchr (const char *s, int len, int c) {
 	const char *end = s + len;
 	while (s < end) {
 		if (*s == c)
-			return (char *)s;
+			return s;
 		s++;
 	}
 
@@ -557,7 +556,7 @@ static char *strnchr (const char *s, int len, int c) {
  * Looks for any matching character from 'match' in 's' and returns
  * a pointer to the first match, or NULL if none of 'match' matched 's'.
  */
-static char *strnchrs (const char *s, int len, const char *match) {
+static const char *strnchrs (const char *s, int len, const char *match) {
 	const char *end = s + len;
 	char map[256] = {};
 	while (*match)
@@ -565,7 +564,7 @@ static char *strnchrs (const char *s, int len, const char *match) {
 
 	while (s < end) {
 		if (map[(int)*s])
-			return (char *)s;
+			return s;
 		s++;
 	}
 
@@ -677,7 +676,7 @@ static int parse_t (const struct tag *tag, struct logline *lp,
 		localtime_r(&t, &tm);
 	}
 
-	dst = scratch_alloc(tag, lp, timelen);
+	dst = scratch_alloc(lp, timelen);
 
 	/* Format time string */
 	tlen = strftime(dst, timelen, timefmt, &tm);
@@ -715,7 +714,7 @@ static int parse_auth_user (const struct tag *tag, struct logline *lp,
 		return 0;
 
 	/* Strip password */
-	if ((q = strnchr(tmp, ulen, ':')))
+	if ((q = strnchr_noconst(tmp, ulen, ':')))
 		*q = '\0';
 
 	return scratch_write(tag, lp, tmp, strlen(tmp));
@@ -737,7 +736,7 @@ static int parse_vcl_handling (const struct tag *tag, struct logline *lp,
 }
 
 static int parse_seq (const struct tag *tag, struct logline *lp,
-		      const char *ptr, int len) {
+		      const char *ptr UNUSED, int len UNUSED) {
 	return scratch_printf(tag, lp, "%"PRIu64, conf.sequence_number);
 }
 
@@ -897,27 +896,27 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 		 */
 		['b'] = { {
 				/* Size of response in bytes, with HTTP headers. */
-				{ VSL_CLIENTMARKER, SLT_ReqAcct, col: 5}
+				{ VSL_CLIENTMARKER, SLT_ReqAcct, .col = 5}
 			} },
 		['D'] = { {
 				/* Time taken to serve the request (s) */
 				{ VSL_CLIENTMARKER, SLT_Timestamp,
-				  var: "Resp", col: 2,
-				  parser: parse_DT}
+				  .var = "Resp", .col = 2,
+				  .parser = parse_DT}
 			} },
 		['T'] = { {
 				/* Time taken to serve the request (s) */
 				{ VSL_CLIENTMARKER, SLT_Timestamp,
-				  var: "Resp", col: 2,
-				  parser: parse_DT}
+				  .var = "Resp", .col = 2,
+				  .parser = parse_DT}
 			} },
 		['H'] = { {
 				/* The request protocol */
 				{ VSL_CLIENTMARKER, SLT_ReqProtocol },
-			}, def: "HTTP/1.0" },
+			}, .def = "HTTP/1.0" },
 		['h'] = { {
 				/* Remote hostname (IP address) */
-				{ VSL_CLIENTMARKER, SLT_ReqStart, col:1},
+				{ VSL_CLIENTMARKER, SLT_ReqStart, .col = 1},
 			} },
 		['i'] = { {
 				/* Used as %{VARNAME}i.
@@ -928,15 +927,15 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 			} },
 		['l'] = { {
 				{ VSL_CLIENTMARKER }
-			}, def: conf.logname },
+			}, .def = conf.logname },
 		['m'] = { {
 				/* Request method (GET|POST|..) */
 				{ VSL_CLIENTMARKER, SLT_ReqMethod }
 			} },
 		['q'] = { {
 				/* The request query string */
-				{ VSL_CLIENTMARKER, SLT_ReqURL, parser: parse_q }
-			},  def: "" },
+				{ VSL_CLIENTMARKER, SLT_ReqURL, .parser = parse_q }
+			},  .def = "" },
 		['o'] = { {
 				/* Used as %{VARNAME}o.
 				 * The contents of VARNAME: header line(s)
@@ -951,37 +950,37 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 		['t'] = { {
 				/* Time the request was received */
 				{ VSL_CLIENTMARKER, SLT_Timestamp,
-				  col: 2,
-				  var: "Start",
-				  parser: parse_t,
-				  tag_flags: TAG_F_NOVARMATCH }
+				  .col = 2,
+				  .var = "Start",
+				  .parser = parse_t,
+				  .tag_flags = TAG_F_NOVARMATCH }
 			} },
 		['U'] = { {
 				/* The URL path requested, not including any query string. */
-				{ VSL_CLIENTMARKER, SLT_ReqURL, parser: parse_U }
+				{ VSL_CLIENTMARKER, SLT_ReqURL, .parser = parse_U }
 			} },
 		['u'] = { {
 				{ VSL_CLIENTMARKER, SLT_RespHeader,
-				  var: "authorization",
-				  parser: parse_auth_user }
+				  .var = "authorization",
+				  .parser = parse_auth_user }
 			} },
 		['x'] = { {
 				/* Various Varnish related tags */
 				{ VSL_CLIENTMARKER, SLT_Timestamp,
-				  var: "Process",
-				  fmtvar: "Varnish:time_firstbyte", col: 2 },
+				  .var = "Process",
+				  .fmtvar = "Varnish:time_firstbyte", .col = 2 },
 				{ VSL_CLIENTMARKER, SLT_Begin,
-				  fmtvar: "Varnish:xvid", col: 2 },
+				  .fmtvar = "Varnish:xvid", .col = 2 },
 				{ VSL_CLIENTMARKER, SLT_VCL_call,
-				  fmtvar: "Varnish:handling",
-				  parser: parse_vcl_handling },
+				  .fmtvar = "Varnish:handling",
+				  .parser = parse_vcl_handling },
 				{ VSL_CLIENTMARKER, SLT_VCL_Log,
-				  fmtvar: "VCL_Log:*" },
+				  .fmtvar = "VCL_Log:*" },
 
 			} },
 		['n'] = { {
 				{ VSL_CLIENTMARKER, VSL_TAG__ONCE,
-				  parser: parse_seq }
+				  .parser = parse_seq }
 			} },
 	};
 	/* Replace legacy formatters */
@@ -992,7 +991,7 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 	};
 	const char *s, *t;
 	const char *format;
-	int cnt = 0;
+	int counter = 0;
 
 	/* Perform legacy replacements. */
 	format = string_replace_arr(format_orig, replace);
@@ -1023,7 +1022,7 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 			if (format_add(fconf, 0,
 				       NULL, 0,
 				       t, (int)(s - t),
-				       0, errstr, errstr_size) == -1)
+				       0) == -1)
 				return -1;
 		}
 
@@ -1159,8 +1158,7 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 
 		/* Add formatter to ordered list of formatters */
 		if ((fmtid = format_add(fconf, *s, var, varlen,
-					def, deflen, flags,
-					errstr, errstr_size)) == -1)
+					def, deflen, flags)) == -1)
 			return -1;
 
 		fconf->fmt[fmtid].type = type;
@@ -1170,7 +1168,7 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 			fconf->fmt[fmtid].namelen = namelen;
 		}
 
-		cnt++;
+		counter++;
 
 		/* Now add the matched tags specification to the
 		 * list of parse tags */
@@ -1231,8 +1229,8 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 				    var ? varlen : -1,
 				    map[(int)*s].f[i].col,
 				    map[(int)*s].f[i].parser,
-				    map[(int)*s].f[i].tag_flags,
-				    errstr, errstr_size) == -1)
+				    map[(int)*s].f[i].tag_flags
+				   ) == -1)
 				return -1;
 		}
 
@@ -1243,8 +1241,8 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 	 *      ^---^  add this part as verbatim string */
 	if (s > t) {
 		if (format_add(fconf, 0, NULL, 0,
-			       t, (int)(s - t), 0,
-			       errstr, errstr_size) == -1)
+			       t, (int)(s - t), 0
+			      ) == -1)
 			return -1;
 	}
 
@@ -1257,7 +1255,7 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 			 "%s format string is empty",
 			 fmt_conf_names[fconf->fid]);
 		return -1;
-	} else if (cnt == 0) {
+	} else if (counter == 0) {
 		snprintf(errstr, errstr_size,
 			 "No %%.. formatters in %s format",
 			 fmt_conf_names[fconf->fid]);
@@ -1287,11 +1285,11 @@ static struct rate_limiter {
 	const char *name;      /* Rate limiter log message summary */
 	const char *fac;       /* Log facility */
 } rate_limiters[RL_NUM] = {
-	[RL_KAFKA_PRODUCE_ERR] = { name: "Kafka produce errors",
-				   fac: "PRODUCE" },
-	[RL_KAFKA_ERROR_CB] = { name: "Kafka errors", fac: "KAFKAERR" },
-	[RL_KAFKA_DR_ERR] = { name: "Kafka message delivery failures",
-			      fac: "KAFKADR" }
+	[RL_KAFKA_PRODUCE_ERR] = { .name = "Kafka produce errors",
+				   .fac = "PRODUCE" },
+	[RL_KAFKA_ERROR_CB] = { .name = "Kafka errors", .fac = "KAFKAERR" },
+	[RL_KAFKA_DR_ERR] = { .name = "Kafka message delivery failures",
+			      .fac = "KAFKADR" }
 };
 
 static time_t rate_limiter_t_curr; /* Current period */
@@ -1367,7 +1365,7 @@ void out_kafka (struct fmt_conf *fconf, struct logline *lp,
 /**
  * Stdout outputter
  */
-void out_stdout (struct fmt_conf *fconf, struct logline *lp,
+void out_stdout (struct fmt_conf *fconf UNUSED, struct logline *lp UNUSED,
 		 const char *buf, size_t len) {
 	printf("%.*s\n", (int)len, buf);
 }
@@ -1375,8 +1373,8 @@ void out_stdout (struct fmt_conf *fconf, struct logline *lp,
 /**
  * Null outputter
  */
-void out_null (struct fmt_conf *fconf, struct logline *lp,
-	       const char *buf, size_t len) {
+void out_null (struct fmt_conf *fconf UNUSED, struct logline *lp UNUSED,
+	       const char *buf UNUSED, size_t len UNUSED) {
 }
 
 
@@ -1390,8 +1388,8 @@ void (*outfunc) (struct fmt_conf *fconf, struct logline *lp,
 /**
  * Kafka error callback
  */
-static void kafka_error_cb (rd_kafka_t *rk, int err,
-			    const char *reason, void *opaque) {
+static void kafka_error_cb (rd_kafka_t *rk_arg UNUSED, int err,
+			    const char *reason, void *opaque UNUSED) {
 	if (!rate_limit(RL_KAFKA_ERROR_CB))
 		vk_log("KAFKAERR", LOG_ERR,
 		       "Kafka error (%i): %s", err, reason);
@@ -1404,10 +1402,10 @@ static void kafka_error_cb (rd_kafka_t *rk, int err,
  * NOTE: If the dr callback is not to be used it can be turned off to
  *       improve performance.
  */
-static void kafka_dr_cb (rd_kafka_t *rk,
-			 void *payload, size_t len,
+static void kafka_dr_cb (rd_kafka_t *rk_arg UNUSED,
+			 void *payload UNUSED, size_t len,
 			 int error_code,
-			 void *opaque, void *msg_opaque) {
+			 void *opaque UNUSED, void *msg_opaque UNUSED) {
 	_DBG("Kafka delivery report: error=%i, size=%zd", error_code, len);
 	if (unlikely(error_code)) {
 		cnt.kafka_drerr++;
@@ -1421,8 +1419,8 @@ static void kafka_dr_cb (rd_kafka_t *rk,
 /**
  * Kafka statistics callback.
  */
-static int kafka_stats_cb (rd_kafka_t *rk, char *json, size_t json_len,
-			    void *opaque) {
+static int kafka_stats_cb (rd_kafka_t *rk_arg UNUSED, char *json, size_t json_len UNUSED,
+			    void *opaque UNUSED) {
 	vk_log_stats("{ \"kafka\": %s }\n", json);
 	return 0;
 }
@@ -1495,7 +1493,7 @@ static void render_match_json (struct fmt_conf *fconf, struct logline *lp) {
 
 		/* Field name */
 		if (likely(fconf->fmt[i].name != NULL)) {
-			yajl_gen_string(g, (unsigned char *)fconf->fmt[i].name,
+			yajl_gen_string(g, (const unsigned char *)fconf->fmt[i].name,
 					fconf->fmt[i].namelen);
 		} else {
 			char name = (char)fconf->fmt[i].id;
@@ -1549,6 +1547,9 @@ static void render_match (struct logline *lp, uint64_t seq) {
 		case VK_ENC_JSON:
 			render_match_json(fconf, lp);
 			break;
+		default:
+			assert(0);
+			break;
 		}
 	}
 }
@@ -1585,7 +1586,7 @@ static void logline_reset (struct logline *lp) {
 /**
  * Returns a new logline
  */
-static inline struct logline *logline_get () {
+static inline struct logline *logline_get (void) {
 	int i;
 	char *ptr;
 	struct logline *lp;
@@ -1691,7 +1692,7 @@ static int tag_match (struct logline *lp, int spec, enum VSL_tag_e tagid,
  * A trasaction cursor (vsl.h) points to a list of tags associated with transaction id.
  * This function parses the current tag pointed by the cursor.
  */
-static int parse_tag(struct VSL_transaction *t)
+static int parse_tag(struct logline* lp, struct VSL_transaction *t)
 {
 	int    is_complete = 0;
 
@@ -1759,8 +1760,9 @@ static int parse_tag(struct VSL_transaction *t)
  * by a single client request will have a different transaction id (and tags) but
  * will reference the same parent transaction (the main request).
  */
-static int __match_proto__(VSLQ_dispatch_f) transaction_scribe (struct VSL_data *vsl,
+static int __match_proto__(VSLQ_dispatch_f) transaction_scribe (struct VSL_data *vsl UNUSED,
 		struct VSL_transaction * const pt[], void *priv) {
+	struct logline* lp = priv;
 	struct VSL_transaction *t;
 	/* Loop through the transations of the grouping */
 	while ((t = *pt++)) {
@@ -1771,7 +1773,7 @@ static int __match_proto__(VSLQ_dispatch_f) transaction_scribe (struct VSL_data 
 			continue;
 		/* loop through the tags */
 		while (VSL_Next(t->c) == 1) {
-			parse_tag(t);
+			parse_tag(lp, t);
 		}
 	}
 	return 0;
@@ -1782,7 +1784,7 @@ static int __match_proto__(VSLQ_dispatch_f) transaction_scribe (struct VSL_data 
 /**
  * varnishkafka logger
  */
-void vk_log0 (const char *func, const char *file, int line,
+void vk_log0 (const char *func UNUSED, const char *file UNUSED, int line UNUSED,
 	      const char *facility, int level, const char *fmt, ...) {
 	va_list ap;
 	static char buf[8192];
@@ -1864,7 +1866,7 @@ static void logrotate(void) {
  * as soon as possible.
  *
  */
-static void sig_hup(int sig) {
+static void sig_hup(int sig UNUSED) {
 	conf.need_logrotate = 1;
 }
 
@@ -1909,7 +1911,7 @@ static void usage (const char *argv0) {
 }
 
 
-void varnish_api_cleaning() {
+static void varnish_api_cleaning(void) {
 	if (conf.vslq)
 		VSLQ_Delete(&conf.vslq);
 
@@ -2167,11 +2169,12 @@ int main (int argc, char **argv) {
 	int dispatch_status = 0;
 
 	/* Creating a new logline (will be re-used across log transactions) */
+	struct logline *lp = NULL;
 	if (unlikely(!(lp = logline_get())))
 		return -1;
 
 	while (conf.run) {
-		dispatch_status = VSLQ_Dispatch(conf.vslq, transaction_scribe, NULL);
+		dispatch_status = VSLQ_Dispatch(conf.vslq, transaction_scribe, lp);
 
 		/* Nothing to read from the shm handle, sleeping */
 		if (dispatch_status == 0)

@@ -39,8 +39,7 @@
 #define unlikely(x) __builtin_expect((x),0)
 #endif
 
-
-
+#define UNUSED __attribute__((unused))
 
 #define VSL_TAGS_MAX 255
 /* A tag that is in all requests but only once. */
@@ -77,8 +76,6 @@ struct tmpbuf {
  * Currently parsed logline
  */
 struct logline {
-	LIST_ENTRY(logline)  link;
-
 	/* Per fmt_conf logline matches */
 	struct match *match[FMT_CONF_NUM];
 
@@ -143,6 +140,7 @@ struct fmt {
 typedef enum {
 	VK_ENC_STRING,
 	VK_ENC_JSON,
+	VK_ENC_INVALID,
 } fmt_enc_t;
 
 struct fmt_conf {
@@ -209,7 +207,7 @@ struct conf {
 
 	int         log_kafka_msg_error;  /* Log Kafka message delivery errors*/
 
-	char       *format[FMT_CONF_NUM]; /* Configured format string(s) */
+	const char *format[FMT_CONF_NUM]; /* Configured format string(s) */
 	int         daemonize;
 
     rd_kafka_conf_t       *rk_conf;

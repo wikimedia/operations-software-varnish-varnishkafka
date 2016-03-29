@@ -77,7 +77,7 @@ static fmt_enc_t encoding_parse (const char *val) {
 	else if (!strcasecmp(val, "json"))
 		return VK_ENC_JSON;
 	else
-		return -1;
+		return VK_ENC_INVALID;
 }
 
 
@@ -130,7 +130,7 @@ static int conf_set (const char *name, const char *val,
 		conf.format[FMT_CONF_MAIN] = strdup(val);
 	else if (!strcmp(name, "format.type")) {
 		if ((conf.fconf[FMT_CONF_MAIN].encoding =
-		     encoding_parse(val)) == -1) {
+		     encoding_parse(val)) == VK_ENC_INVALID) {
 			snprintf(errstr, errstr_size,
 				 "Unknown format.type value \"%s\"", val);
 			return -1;
@@ -139,7 +139,7 @@ static int conf_set (const char *name, const char *val,
 		conf.format[FMT_CONF_KEY] = strdup(val);
 	else if (!strcmp(name, "format.key.type")) {
 		if ((conf.fconf[FMT_CONF_KEY].encoding =
-		     encoding_parse(val)) == -1) {
+		     encoding_parse(val)) == VK_ENC_INVALID) {
 			snprintf(errstr, errstr_size,
 				 "Unknown format.key.type value \"%s\"", val);
 			return -1;
