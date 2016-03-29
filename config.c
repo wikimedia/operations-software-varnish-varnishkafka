@@ -49,6 +49,7 @@
  * varnishkafka global configuration
  */
 struct conf conf;
+struct fmt_conf fconf;
 
 
 /**
@@ -127,21 +128,12 @@ static int conf_set (const char *name, const char *val,
 	else if (!strcmp(name, "kafka.partition"))
 		conf.partition = atoi(val);
 	else if (!strcmp(name, "format"))
-		conf.format[FMT_CONF_MAIN] = strdup(val);
+		conf.format = strdup(val);
 	else if (!strcmp(name, "format.type")) {
-		if ((conf.fconf[FMT_CONF_MAIN].encoding =
+		if ((fconf.encoding =
 		     encoding_parse(val)) == VK_ENC_INVALID) {
 			snprintf(errstr, errstr_size,
 				 "Unknown format.type value \"%s\"", val);
-			return -1;
-		}
-	} else if (!strcmp(name, "format.key"))
-		conf.format[FMT_CONF_KEY] = strdup(val);
-	else if (!strcmp(name, "format.key.type")) {
-		if ((conf.fconf[FMT_CONF_KEY].encoding =
-		     encoding_parse(val)) == VK_ENC_INVALID) {
-			snprintf(errstr, errstr_size,
-				 "Unknown format.key.type value \"%s\"", val);
 			return -1;
 		}
 	} else if (!strcmp(name, "tag.size.max"))

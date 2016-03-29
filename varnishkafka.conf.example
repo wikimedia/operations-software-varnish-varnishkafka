@@ -89,18 +89,6 @@ format = %l        %n        %t        %{Varnish:time_firstbyte}x        %h     
 #format = %{@host}l %{@seq_num!num}n %{@timestamp}t %{Varnish:time_firstbyte@response!num}x %{@ip}h %{Varnish:handling@handling}x %{@http_status}s %{@bytes_sent!num}b %{@request_method}m %{Host@host}i %{@uri}U %{@query}q %{Content-Type@mime_type}o %{Referer@referer}i %{X-Forwarded-For@x_forwarded_for}i %{User-Agent@user_agent}i %{Accept-Language@accept_language}i %{X-Analytics@x_analytics}o
 
 
-
-# Optional secondary formatting.
-#   'output = kafka':  The rendered 'format.key' will be provided as the
-#                      Kafka message Key
-#   'output = string': Print string to stdout.
-# Supports the same formating and type as 'format' and 'format.type'.
-#
-format.key.type = string
-format.key = %{%s}t
-
-
-
 # Where to output varnish log lines:
 #  kafka  - (default) send to kafka broker
 #  stdout - just print to stdout (behave like varnishncsa)

@@ -55,12 +55,6 @@ struct match {
 };
 
 
-/* Format configurations */
-#define FMT_CONF_MAIN    0  /* Main format */
-#define FMT_CONF_KEY     1  /* Kafka key format */
-#define FMT_CONF_NUM     2
-
-
 /**
  * Temporary scratch buffer
  */
@@ -76,18 +70,14 @@ struct tmpbuf {
  * Currently parsed logline
  */
 struct logline {
-	/* Per fmt_conf logline matches */
-	struct match *match[FMT_CONF_NUM];
+	/* Per fmt logline matches */
+	struct match *match;
 
 	/* Sequence number */
 	uint64_t seq;
 
 	/* Last use of this logline */
 	time_t   t_last;
-
-	/* Rendered FMT_CONF_KEY for use in _MAIN output func */
-	char    *key;
-	size_t   key_len;
 
 	/* Auxillery buffers (if scratch pad is not sufficient) */
 	struct tmpbuf *tmpbuf;
@@ -105,7 +95,6 @@ struct logline {
 struct tag {
 	struct tag *next;
 	struct fmt *fmt;
-	int    fid;    /* conf.fconf index */
 	int    spec;
 	int    tag;
 	char  *var;
@@ -148,8 +137,6 @@ struct fmt_conf {
 	struct fmt *fmt;
 	int         fmt_cnt;
 	int         fmt_size;
-
-	int         fid;  /* conf.fconf index */
 	fmt_enc_t   encoding;
 };
 
@@ -172,10 +159,6 @@ struct conf {
 
 	/* Sparsely populated with desired tags */
 	struct tag **tag;
-
-	/* Format configurations */
-	struct fmt_conf fconf[FMT_CONF_NUM];
-	int             fconf_cnt;
 
 	uint64_t    sequence_number;
 
@@ -207,7 +190,7 @@ struct conf {
 
 	int         log_kafka_msg_error;  /* Log Kafka message delivery errors*/
 
-	const char *format[FMT_CONF_NUM]; /* Configured format string(s) */
+	const char *format; /* Configured format string */
 	int         daemonize;
 
     rd_kafka_conf_t       *rk_conf;
@@ -220,6 +203,7 @@ struct conf {
 };
 
 extern struct conf conf;
+extern struct fmt_conf fconf;
 
 int conf_file_read (const char *path);
 
@@ -236,11 +220,7 @@ void vk_log0 (const char *func, const char *file, int line,
 void vk_log_stats(const char *fmt, ...)
 	__attribute__((format (printf, 1, 2)));
 
-void out_kafka (struct fmt_conf *fconf, struct logline *lp,
-		const char *buf, size_t len);
-void out_stdout (struct fmt_conf *fconf, struct logline *lp,
-		 const char *buf, size_t len);
-void out_null (struct fmt_conf *fconf, struct logline *lp,
-	       const char *buf, size_t len);
-extern void (*outfunc) (struct fmt_conf *fconf, struct logline *lp,
-			const char *buf, size_t len);
+void out_kafka (struct logline *lp, const char *buf, size_t len);
+void out_stdout (struct logline *lp, const char *buf, size_t len);
+void out_null (struct logline *lp, const char *buf, size_t len);
+extern void (*outfunc) (struct logline *lp, const char *buf, size_t len);

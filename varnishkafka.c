@@ -68,11 +68,6 @@ static rd_kafka_topic_t *rkt;
 
 static const char *conf_file_path = VARNISHKAFKA_CONF_PATH;
 
-static const char *fmt_conf_names[] = {
-	[FMT_CONF_MAIN] = "Main",
-	[FMT_CONF_KEY]  = "Key"
-};
-
 static void logrotate(void);
 
 /**
@@ -149,20 +144,21 @@ static char *const_string_add (const char *in, int inlen) {
 /**
  * Print parsed format string: formatters
  */
-static UNUSED void fmt_dump (const struct fmt_conf *fconf) {
+static UNUSED void fmt_dump (void) {
 	int i;
 
-	_DBG("%s %i/%i formats:",
-	     fmt_conf_names[fconf->fid], fconf->fmt_cnt, fconf->fmt_size);
-	for (i = 0 ; i < fconf->fmt_cnt ; i++) {
+	_DBG("Main %i/%i formats:",
+	     fconf.fmt_cnt, fconf.fmt_size);
+	for (i = 0 ; i < fconf.fmt_cnt ; i++) {
+		struct fmt *fmt = &fconf.fmt[i];
 		_DBG(" #%-3i  fmt %i (%c)  var \"%s\", def (%i)\"%.*s\"%s",
 		     i,
-		     fconf->fmt[i].id,
-		     isprint(fconf->fmt[i].id) ? (char)fconf->fmt[i].id : ' ',
-		     fconf->fmt[i].var ? : "",
-		     fconf->fmt[i].deflen, fconf->fmt[i].deflen,
-		     fconf->fmt[i].def,
-		     fconf->fmt[i].flags & FMT_F_ESCAPE ? ", escape" : "");
+		     fmt->id,
+		     isprint(fmt->id) ? (char)fmt->id : ' ',
+		     fmt->var ? : "",
+		     fmt->deflen, fmt->deflen,
+		     fmt->def,
+		     fmt->flags & FMT_F_ESCAPE ? ", escape" : "");
 	}
 }
 
@@ -197,23 +193,22 @@ static UNUSED void tag_dump (void) {
 /**
  * Adds a parsed formatter to the list of formatters
  */
-static int format_add (struct fmt_conf *fconf, int fmtr,
-		       const char *var, ssize_t varlen,
+static int format_add (int fmtr, const char *var, ssize_t varlen,
 		       const char *def, ssize_t deflen,
 		       int flags) {
 	struct fmt *fmt;
 
-	if (fconf->fmt_cnt >= fconf->fmt_size) {
-		fconf->fmt_size = (fconf->fmt_size ? : 32) * 2;
-		fconf->fmt = realloc(fconf->fmt,
-				     fconf->fmt_size * sizeof(*fconf->fmt));
+	if (fconf.fmt_cnt >= fconf.fmt_size) {
+		fconf.fmt_size = (fconf.fmt_size ? : 32) * 2;
+		fconf.fmt = realloc(fconf.fmt,
+				     fconf.fmt_size * sizeof(*fconf.fmt));
 	}
 
-	fmt = &fconf->fmt[fconf->fmt_cnt];
+	fmt = &fconf.fmt[fconf.fmt_cnt];
 	memset(fmt, 0, sizeof(*fmt));
 
 	fmt->id    = fmtr;
-	fmt->idx   = fconf->fmt_cnt;
+	fmt->idx   = fconf.fmt_cnt;
 	fmt->flags = flags;
 	if (var) {
 		if (varlen == -1)
@@ -234,7 +229,7 @@ static int format_add (struct fmt_conf *fconf, int fmtr,
 	fmt->deflen = deflen;
 	fmt->def = const_string_add(def, deflen);
 
-	fconf->fmt_cnt++;
+	fconf.fmt_cnt++;
 
 	return fmt->idx;
 }
@@ -244,10 +239,8 @@ static int format_add (struct fmt_conf *fconf, int fmtr,
 /**
  * Adds a parsed tag to the list of tags
  */
-static int tag_add (struct fmt_conf *fconf, struct fmt *fmt,
-		    int spec, int tagid,
-		    const char *var, ssize_t varlen,
-		    int col,
+static int tag_add (struct fmt *fmt, int spec, int tagid,
+		    const char *var, ssize_t varlen, int col,
 		    int (*parser) (const struct tag *tag, struct logline *lp,
 				   const char *ptr, int len),
 		    int tag_flags) {
@@ -268,7 +261,6 @@ static int tag_add (struct fmt_conf *fconf, struct fmt *fmt,
 	tag->fmt    = fmt;
 	tag->parser = parser;
 	tag->flags  = tag_flags;
-	tag->fid    = fconf->fid;
 
 	if (var) {
 		if (varlen == -1)
@@ -495,8 +487,8 @@ static inline int scratch_printf (const struct tag *tag, struct logline *lp,
 static inline void match_assign0 (const struct tag *tag, struct logline *lp,
 				  const char *ptr, int len) {
 	assert(len >= 0);
-	lp->match[tag->fid][tag->fmt->idx].ptr = ptr;
-	lp->match[tag->fid][tag->fmt->idx].len = len;
+	lp->match[tag->fmt->idx].ptr = ptr;
+	lp->match[tag->fmt->idx].len = len;
 }
 
 
@@ -840,7 +832,7 @@ static char *string_replace_arr (const char *in, const char **arr) {
 /**
  * Parse the format string and build a parsing array.
  */
-static int format_parse (struct fmt_conf *fconf, const char *format_orig,
+static int format_parse (const char *format_orig,
 			 char *errstr, size_t errstr_size) {
 	/**
 	 * Maps a formatter %X to a VSL tag and column id, or parser, or both
@@ -1019,10 +1011,7 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 		/* ".....%... "
 		 *  ^---^  add this part as verbatim string */
 		if (s > t) {
-			if (format_add(fconf, 0,
-				       NULL, 0,
-				       t, (int)(s - t),
-				       0) == -1)
+			if (format_add(0, NULL, 0, t, (int)(s - t), 0) == -1)
 				return -1;
 		}
 
@@ -1157,15 +1146,15 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 		}
 
 		/* Add formatter to ordered list of formatters */
-		if ((fmtid = format_add(fconf, *s, var, varlen,
+		if ((fmtid = format_add(*s, var, varlen,
 					def, deflen, flags)) == -1)
 			return -1;
 
-		fconf->fmt[fmtid].type = type;
+		fconf.fmt[fmtid].type = type;
 
 		if (name) {
-			fconf->fmt[fmtid].name = name;
-			fconf->fmt[fmtid].namelen = namelen;
+			fconf.fmt[fmtid].name = name;
+			fconf.fmt[fmtid].namelen = namelen;
 		}
 
 		counter++;
@@ -1222,7 +1211,7 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 				}
 			}
 
-			if (tag_add(fconf, &fconf->fmt[fmtid],
+			if (tag_add(&fconf.fmt[fmtid],
 				    map[(int)*s].f[i].spec,
 				    map[(int)*s].f[i].tag,
 				    var ? var : map[(int)*s].f[i].var,
@@ -1240,29 +1229,25 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 	/* "..%x....."
 	 *      ^---^  add this part as verbatim string */
 	if (s > t) {
-		if (format_add(fconf, 0, NULL, 0,
-			       t, (int)(s - t), 0
-			      ) == -1)
+		if (format_add(0, NULL, 0, t, (int)(s - t), 0) == -1)
 			return -1;
 	}
 
 	/* Dump parsed format string. */
 	if (conf.log_level >= 7)
-		fmt_dump(fconf);
+		fmt_dump();
 
-	if (fconf->fmt_cnt == 0) {
+	if (fconf.fmt_cnt == 0) {
 		snprintf(errstr, errstr_size,
-			 "%s format string is empty",
-			 fmt_conf_names[fconf->fid]);
+			 "Main format string is empty");
 		return -1;
 	} else if (counter == 0) {
 		snprintf(errstr, errstr_size,
-			 "No %%.. formatters in %s format",
-			 fmt_conf_names[fconf->fid]);
+			 "No %%.. formatters in Main format");
 		return -1;
 	}
 
-	return fconf->fmt_cnt;
+	return fconf.fmt_cnt;
 }
 
 
@@ -1334,22 +1319,11 @@ static inline int rate_limit (rl_type_t type) {
 /**
  * Kafka outputter
  */
-void out_kafka (struct fmt_conf *fconf, struct logline *lp,
-		const char *buf, size_t len) {
-
-	/* If 'buf' is the key we simply store it for later use
-	 * when the message is produced. */
-	if (fconf->fid == FMT_CONF_KEY) {
-		assert(!lp->key);
-		lp->key = malloc(len);
-		lp->key_len = len;
-		memcpy(lp->key, buf, len);
-		return;
-	}
+void out_kafka (struct logline *lp, const char *buf, size_t len) {
 
 	if (rd_kafka_produce(rkt, conf.partition, RD_KAFKA_MSG_F_COPY,
 			     (void *)buf, len,
-			     lp->key, lp->key_len, NULL) == -1) {
+			     NULL, 0, NULL) == -1) {
 		cnt.txerr++;
 		if (!rate_limit(RL_KAFKA_PRODUCE_ERR))
 			vk_log("PRODUCE", LOG_WARNING,
@@ -1365,24 +1339,21 @@ void out_kafka (struct fmt_conf *fconf, struct logline *lp,
 /**
  * Stdout outputter
  */
-void out_stdout (struct fmt_conf *fconf UNUSED, struct logline *lp UNUSED,
-		 const char *buf, size_t len) {
+void out_stdout (struct logline *lp UNUSED, const char *buf, size_t len) {
 	printf("%.*s\n", (int)len, buf);
 }
 
 /**
  * Null outputter
  */
-void out_null (struct fmt_conf *fconf UNUSED, struct logline *lp UNUSED,
-	       const char *buf UNUSED, size_t len UNUSED) {
+void out_null (struct logline *lp UNUSED, const char *buf UNUSED, size_t len UNUSED) {
 }
 
 
 /**
  * Currently selected outputter.
  */
-void (*outfunc) (struct fmt_conf *fconf, struct logline *lp,
-		 const char *buf, size_t len) = out_kafka;
+void (*outfunc) (struct logline *lp, const char *buf, size_t len) = out_kafka;
 
 
 /**
@@ -1426,22 +1397,22 @@ static int kafka_stats_cb (rd_kafka_t *rk_arg UNUSED, char *json, size_t json_le
 }
 
 
-static void render_match_string (struct fmt_conf *fconf, struct logline *lp) {
+static void render_match_string (struct logline *lp) {
 	char buf[8192];
 	int  of = 0;
 	int  i;
 
 	/* Render each formatter in order. */
-	for (i = 0 ; i < fconf->fmt_cnt ; i++) {
+	for (i = 0 ; i < fconf.fmt_cnt ; i++) {
 		const void *ptr;
-		int len = lp->match[fconf->fid][i].len;
+		int len = lp->match[i].len;
 
 		/* Either use accumulated value, or the default value. */
 		if (len) {
-			ptr = lp->match[fconf->fid][i].ptr;
+			ptr = lp->match[i].ptr;
 		} else {
-			ptr = fconf->fmt[i].def;
-			len = fconf->fmt[i].deflen;
+			ptr = fconf.fmt[i].def;
+			len = fconf.fmt[i].deflen;
 		}
 
 		if (of + len >= sizeof(buf))
@@ -1453,11 +1424,11 @@ static void render_match_string (struct fmt_conf *fconf, struct logline *lp) {
 
 	/* Pass rendered log line to outputter function */
 	cnt.tx++;
-	outfunc(fconf, lp, buf, of);
+	outfunc(lp, buf, of);
 }
 
 
-static void render_match_json (struct fmt_conf *fconf, struct logline *lp) {
+static void render_match_json (struct logline *lp) {
 	yajl_gen g;
 	int      i;
 	const unsigned char *buf;
@@ -1475,33 +1446,33 @@ static void render_match_json (struct fmt_conf *fconf, struct logline *lp) {
 	yajl_gen_map_open(g);
 
 	/* Render each formatter in order. */
-	for (i = 0 ; i < fconf->fmt_cnt ; i++) {
+	for (i = 0 ; i < fconf.fmt_cnt ; i++) {
 		const void *ptr;
-		int len = lp->match[fconf->fid][i].len;
+		int len = lp->match[i].len;
 
 		/* Skip constant strings */
-		if (fconf->fmt[i].id == 0)
+		if (fconf.fmt[i].id == 0)
 			continue;
 
 		/* Either use accumulated value, or the default value. */
 		if (len) {
-			ptr = lp->match[fconf->fid][i].ptr;
+			ptr = lp->match[i].ptr;
 		} else {
-			ptr = fconf->fmt[i].def;
-			len = fconf->fmt[i].deflen;
+			ptr = fconf.fmt[i].def;
+			len = fconf.fmt[i].deflen;
 		}
 
 		/* Field name */
-		if (likely(fconf->fmt[i].name != NULL)) {
-			yajl_gen_string(g, (const unsigned char *)fconf->fmt[i].name,
-					fconf->fmt[i].namelen);
+		if (likely(fconf.fmt[i].name != NULL)) {
+			yajl_gen_string(g, (const unsigned char *)fconf.fmt[i].name,
+					fconf.fmt[i].namelen);
 		} else {
-			char name = (char)fconf->fmt[i].id;
+			char name = (char)fconf.fmt[i].id;
 			yajl_gen_string(g, (unsigned char *)&name, 1);
 		}
 
 		/* Value */
-		switch (fconf->fmt[i].type)
+		switch (fconf.fmt[i].type)
 		{
 		case FMT_TYPE_STRING:
 			yajl_gen_string(g, ptr, len);
@@ -1522,7 +1493,7 @@ static void render_match_json (struct fmt_conf *fconf, struct logline *lp) {
 	yajl_gen_get_buf(g, &buf, &buflen);
 
 	/* Pass rendered log line to outputter function */
-	outfunc(fconf, lp, (const char *)buf, buflen);
+	outfunc(lp, (const char *)buf, buflen);
 
 	yajl_gen_clear(g);
 	yajl_gen_free(g);
@@ -1532,25 +1503,19 @@ static void render_match_json (struct fmt_conf *fconf, struct logline *lp) {
  * Render an accumulated logline to string and pass it to the output function.
  */
 static void render_match (struct logline *lp, uint64_t seq) {
-	int i;
-
 	lp->seq = seq;
 
-	/* Render fmt_confs in reverse order so KEY is available for MAIN */
-	for (i = conf.fconf_cnt-1 ; i >= 0 ; i--) {
-		struct fmt_conf *fconf = &conf.fconf[i];
-		switch (fconf->encoding)
-		{
-		case VK_ENC_STRING:
-			render_match_string(fconf, lp);
-			break;
-		case VK_ENC_JSON:
-			render_match_json(fconf, lp);
-			break;
-		default:
-			assert(0);
-			break;
-		}
+	switch (fconf.encoding)
+	{
+	case VK_ENC_STRING:
+		render_match_string(lp);
+		break;
+	case VK_ENC_JSON:
+		render_match_json(lp);
+		break;
+	default:
+		assert(0);
+		break;
 	}
 }
 
@@ -1558,23 +1523,15 @@ static void render_match (struct logline *lp, uint64_t seq) {
  * Resets the given logline and makes it ready for accumulating a new request.
  */
 static void logline_reset (struct logline *lp) {
-	int i;
 	struct tmpbuf *tmpbuf;
 
 	/* Clear logline, except for scratch pad since it will be overwritten */
-	for (i = 0 ; i < conf.fconf_cnt ; i++)
-		memset(lp->match[i], 0, conf.fconf[i].fmt_cnt * sizeof(*lp->match[i]));
+	memset(lp->match, 0, fconf.fmt_cnt * sizeof(*lp->match));
 
 	/* Free temporary buffers */
 	while ((tmpbuf = lp->tmpbuf)) {
 		lp->tmpbuf = tmpbuf->next;
 		free(tmpbuf);
-	}
-
-	if (lp->key) {
-		free(lp->key);
-		lp->key = NULL;
-		lp->key_len = 0;
 	}
 
 	lp->seq       = 0;
@@ -1587,22 +1544,18 @@ static void logline_reset (struct logline *lp) {
  * Returns a new logline
  */
 static inline struct logline *logline_get (void) {
-	int i;
 	char *ptr;
 	struct logline *lp;
 
 	/* Allocate and set up new logline */
 	lp = malloc(sizeof(*lp) + conf.scratch_size +
-		    (conf.total_fmt_cnt * sizeof(*lp->match[0])));
+		    (fconf.fmt_cnt * sizeof(*lp->match)));
 	memset(lp, 0, sizeof(*lp));
 
 	ptr = (char *)(lp+1) + conf.scratch_size;
-	for (i = 0 ; i < conf.fconf_cnt ; i++) {
-		size_t msize = conf.fconf[i].fmt_cnt * sizeof(*lp->match[i]);
-		lp->match[i] = (struct match *)ptr;
-		memset(lp->match[i], 0, msize);
-		ptr += msize;
-	}
+	size_t msize = fconf.fmt_cnt * sizeof(*lp->match);
+	lp->match = (struct match *)ptr;
+	memset(lp->match, 0, msize);
 
 	return lp;
 }
@@ -1625,7 +1578,7 @@ static int tag_match (struct logline *lp, int spec, enum VSL_tag_e tagid,
 		int len2;
 
 		/* Value already assigned */
-		if (lp->match[tag->fid][tag->fmt->idx].ptr)
+		if (lp->match[tag->fmt->idx].ptr)
 			continue;
 
 		/* Match spec (client or backend) */
@@ -1928,7 +1881,6 @@ int main (int argc, char **argv) {
 	char hostname[1024];
 	struct hostent *lh;
 	char c;
-	int i;
 
 	/*
 	 * Default configuration
@@ -1954,10 +1906,7 @@ int main (int argc, char **argv) {
 	conf.topic_conf = rd_kafka_topic_conf_new();
 	rd_kafka_topic_conf_set(conf.topic_conf, "required_acks", "1", NULL, 0);
 
-	for (i = 0 ; i < FMT_CONF_NUM ; i++)
-		conf.fconf[i].fid = i;
-
-	conf.format[FMT_CONF_MAIN] = "%l %n %t %{Varnish:time_firstbyte}x %h "
+	conf.format = "%l %n %t %{Varnish:time_firstbyte}x %h "
 		"%{Varnish:handling}x/%s %b %m http://%{Host}i%U%q - - "
 		"%{Referer}i %{X-Forwarded-For}i %{User-agent}i";
 
@@ -2048,25 +1997,17 @@ int main (int argc, char **argv) {
 	/* Allocate room for format tag buckets. */
 	conf.tag = calloc(VSL_TAGS_MAX, sizeof(*conf.tag));
 
-	/* Parse the format strings */
-	for (i = 0 ; i < FMT_CONF_NUM ; i++) {
-		if (!conf.format[i])
-			continue;
-
-		if (format_parse(&conf.fconf[i], conf.format[i],
-				 errstr, sizeof(errstr)) == -1) {
-			vk_log("FMTPARSE", LOG_ERR,
-			       "Failed to parse %s format string: %s\n%s",
-			       fmt_conf_names[i], conf.format[i], errstr);
-			exit(1);
-		}
-
-		conf.fconf_cnt++;
-		conf.total_fmt_cnt += conf.fconf[i].fmt_cnt;
+	/* Parse the format string */
+	if(!conf.format) {
+		vk_log("FMT", LOG_ERR, "No formats defined");
+		exit(1);
 	}
 
-	if (conf.fconf_cnt == 0) {
-		vk_log("FMT", LOG_ERR, "No formats defined");
+	if (format_parse(conf.format,
+			 errstr, sizeof(errstr)) == -1) {
+		vk_log("FMTPARSE", LOG_ERR,
+		       "Failed to parse Main format string: %s\n%s",
+		       conf.format, errstr);
 		exit(1);
 	}
 
