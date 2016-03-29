@@ -74,19 +74,13 @@ struct tmpbuf {
 
 
 /**
- * Currently parsed logline(s)
+ * Currently parsed logline
  */
 struct logline {
 	LIST_ENTRY(logline)  link;
 
-	/* Log id */
-	unsigned int  id;
-
 	/* Per fmt_conf logline matches */
 	struct match *match[FMT_CONF_NUM];
-
-	/* Tags seen (for -m regexp) */
-	uint64_t tags_seen;
 
 	/* Sequence number */
 	uint64_t seq;
@@ -191,8 +185,6 @@ struct conf {
 	int         datacopy;
 	fmt_enc_t   fmt_enc;
 	int         total_fmt_cnt;
-	int         loglines_hsize;  /* Log id hash size */
-	int         loglines_hmax;   /* Max log ids per hash bucket */
 	int         tag_size_max;    /* Maximum tag size to accept without
 				      * truncating it. */
 

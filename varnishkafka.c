@@ -73,21 +73,10 @@ static const char *fmt_conf_names[] = {
 	[FMT_CONF_KEY]  = "Key"
 };
 
-/**
- * Logline cache
- */
-static struct {
-	LIST_HEAD(, logline) lps;    /* Current loglines in bucket */
-	int                  cnt;    /* Current number of loglines in bucket */
-	uint64_t             hit;    /* Cache hits */
-	uint64_t             miss;   /* Cache misses */
-	uint64_t             purge;  /* Cache entry purges (bucket full) */
-} *loglines;
-
-static int logline_cnt = 0; /* Current number of loglines in memory */
+/* logline accumulator reused across log transactions */
+struct logline *lp = NULL;
 
 static void logrotate(void);
-
 
 /**
  * Counters
@@ -111,7 +100,6 @@ static void print_stats (void) {
 	       "\"trunc\":%"PRIu64", "
 	       "\"scratch_toosmall\":%"PRIu64", "
 	       "\"scratch_tmpbufs\":%"PRIu64", "
-	       "\"lp_curr\":%i, "
 	       "\"seq\":%"PRIu64" "
 	       "} }\n",
 	       (unsigned long long)time(NULL),
@@ -121,7 +109,6 @@ static void print_stats (void) {
 	       cnt.trunc,
 	       cnt.scratch_toosmall,
 	       cnt.scratch_tmpbufs,
-	       logline_cnt,
 	       conf.sequence_number);
 }
 
@@ -1566,21 +1553,6 @@ static void render_match (struct logline *lp, uint64_t seq) {
 	}
 }
 
-
-
-/**
- * Initialize log line lookup hash
- */
-static void loglines_init (void) {
-	loglines = calloc(sizeof(*loglines), conf.loglines_hsize);
-}
-
-/**
- * Returns the hash key (bucket) for a given log id
- */
-#define logline_hkey(id) ((id) % conf.loglines_hsize)
-
-
 /**
  * Resets the given logline and makes it ready for accumulating a new request.
  */
@@ -1589,10 +1561,8 @@ static void logline_reset (struct logline *lp) {
 	struct tmpbuf *tmpbuf;
 
 	/* Clear logline, except for scratch pad since it will be overwritten */
-
 	for (i = 0 ; i < conf.fconf_cnt ; i++)
-		memset(lp->match[i], 0,
-		       conf.fconf[i].fmt_cnt * sizeof(*lp->match[i]));
+		memset(lp->match[i], 0, conf.fconf[i].fmt_cnt * sizeof(*lp->match[i]));
 
 	/* Free temporary buffers */
 	while ((tmpbuf = lp->tmpbuf)) {
@@ -1608,69 +1578,23 @@ static void logline_reset (struct logline *lp) {
 
 	lp->seq       = 0;
 	lp->sof       = 0;
-	lp->tags_seen = 0;
 	lp->t_last    = time(NULL);
 }
 
 
 /**
- * Free up all loglines.
+ * Returns a new logline
  */
-static void loglines_term (void) {
-	unsigned int hkey;
-	for (hkey = 0 ; hkey < conf.loglines_hsize ; hkey++) {
-		struct logline *lp;
-		while ((lp = LIST_FIRST(&loglines[hkey].lps))) {
-			logline_reset(lp);
-			LIST_REMOVE(lp, link);
-			free(lp);
-			logline_cnt--;
-		}
-	}
-	free(loglines);
-}
-
-
-/**
- * Returns a logline.
- */
-static inline struct logline *logline_get (unsigned int id) {
-	struct logline *lp, *oldest = NULL;
-	unsigned int hkey = logline_hkey(id);
+static inline struct logline *logline_get () {
 	int i;
 	char *ptr;
-
-	LIST_FOREACH(lp, &loglines[hkey].lps, link) {
-		if (lp->id == id) {
-			/* Cache hit: return existing logline */
-			loglines[hkey].hit++;
-			return lp;
-		} else if (loglines[hkey].cnt > conf.loglines_hmax &&
-			   lp->tags_seen &&
-			   (!oldest || lp->t_last < oldest->t_last)) {
-			oldest = lp;
-		}
-	}
-
-	/* Cache miss */
-	loglines[hkey].miss++;
-
-	if (oldest) {
-		/* Remove oldest entry.
-		 * We will not loose a log record here since this only
-		 * matches when 'tags_seen' is zero. */
-		LIST_REMOVE(oldest, link);
-		loglines[hkey].cnt--;
-		loglines[hkey].purge++;
-		free(oldest);
-		logline_cnt--;
-	}
+	struct logline *lp;
 
 	/* Allocate and set up new logline */
 	lp = malloc(sizeof(*lp) + conf.scratch_size +
 		    (conf.total_fmt_cnt * sizeof(*lp->match[0])));
 	memset(lp, 0, sizeof(*lp));
-	lp->id = id;
+
 	ptr = (char *)(lp+1) + conf.scratch_size;
 	for (i = 0 ; i < conf.fconf_cnt ; i++) {
 		size_t msize = conf.fconf[i].fmt_cnt * sizeof(*lp->match[i]);
@@ -1678,10 +1602,6 @@ static inline struct logline *logline_get (unsigned int id) {
 		memset(lp->match[i], 0, msize);
 		ptr += msize;
 	}
-
-	LIST_INSERT_HEAD(&loglines[hkey].lps, lp, link);
-	loglines[hkey].cnt++;
-	logline_cnt++;
 
 	return lp;
 }
@@ -1771,15 +1691,13 @@ static int tag_match (struct logline *lp, int spec, enum VSL_tag_e tagid,
  * A trasaction cursor (vsl.h) points to a list of tags associated with transaction id.
  * This function parses the current tag pointed by the cursor.
  */
-static int parse_tag (struct VSL_transaction *t, uint64_t bitmap)
+static int parse_tag(struct VSL_transaction *t)
 {
-	struct logline *lp;
 	int    is_complete = 0;
 
 	/* Data carried by the transaction's current cursor */
 	enum VSL_tag_e tag = VSL_TAG(t->c->rec.ptr);
 	const char * tag_data = VSL_CDATA(t->c->rec.ptr);
-	long vxid = VSL_ID(t->c->rec.ptr);
 
 	/* Avoiding VSL_LEN to prevent \0 termination char
 	 * to be counted causing \u0000 to be displayed in JSON
@@ -1797,12 +1715,6 @@ static int parse_tag (struct VSL_transaction *t, uint64_t bitmap)
 	 * it will be kept in case of future expansions.
 	 */
 	int spec = VSL_CLIENT(t->c->rec.ptr) ? VSL_CLIENTMARKER : VSL_BACKENDMARKER;
-
-	if (unlikely(!(lp = logline_get(vxid))))
-		return -1;
-
-	/* Update bitfield of seen tags (-m regexp) */
-	lp->tags_seen |= bitmap;
 
 	/* Truncate data if exceeding configured max */
 	if (unlikely(len > conf.tag_size_max)) {
@@ -1852,15 +1764,14 @@ static int __match_proto__(VSLQ_dispatch_f) transaction_scribe (struct VSL_data 
 	struct VSL_transaction *t;
 	/* Loop through the transations of the grouping */
 	while ((t = *pt++)) {
+		/* Only client requests are allowed */
+		if (t->type != VSL_t_req)
+			continue;
+		if (t->reason == VSL_r_esi)
+			continue;
 		/* loop through the tags */
-		uint64_t bitmap = 0;
 		while (VSL_Next(t->c) == 1) {
-			/* Only client requests are allowed */
-			if (t->type != VSL_t_req)
-				continue;
-			if (t->reason == VSL_r_esi)
-				continue;
-			parse_tag(t, bitmap);
+			parse_tag(t);
 		}
 	}
 	return 0;
@@ -2027,8 +1938,6 @@ int main (int argc, char **argv) {
 	conf.daemonize = 1;
 	conf.datacopy  = 1;
 	conf.tag_size_max   = 2048;
-	conf.loglines_hsize = 5000;
-	conf.loglines_hmax  = 5;
 	conf.scratch_size   = 4096;
 	conf.stats_interval = 60;
 	conf.stats_file     = strdup("/tmp/varnishkafka.stats.json");
@@ -2162,9 +2071,6 @@ int main (int argc, char **argv) {
 	if (conf.log_level >= 7)
 		tag_dump();
 
-	/* Prepare logline cache */
-	loglines_init();
-
 	/* Daemonize if desired */
 	if (conf.daemonize) {
 		if (daemon(0, 0) == -1) {
@@ -2260,6 +2166,10 @@ int main (int argc, char **argv) {
 	wait_for.tv_nsec = 10000000L;
 	int dispatch_status = 0;
 
+	/* Creating a new logline (will be re-used across log transactions) */
+	if (unlikely(!(lp = logline_get())))
+		return -1;
+
 	while (conf.run) {
 		dispatch_status = VSLQ_Dispatch(conf.vslq, transaction_scribe, NULL);
 
@@ -2297,7 +2207,6 @@ int main (int argc, char **argv) {
 		rd_kafka_destroy(rk);
 	}
 
-	loglines_term();
 	print_stats();
 
 	/* if stats_fp is set (i.e. open), close it. */
@@ -2307,6 +2216,8 @@ int main (int argc, char **argv) {
 	}
 
 	free(conf.stats_file);
+
+	free(lp);
 
 	rate_limiters_rollover(time(NULL));
 
