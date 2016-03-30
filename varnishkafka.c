@@ -78,9 +78,6 @@ static struct {
 	uint64_t txerr;            /* Transmit failures */
 	uint64_t kafka_drerr;      /* Kafka: message delivery errors */
 	uint64_t trunc;            /* Truncated tags */
-	uint64_t scratch_toosmall; /* Scratch buffer was too small and
-				    * a temporary buffer was required. */
-	uint64_t scratch_tmpbufs;  /* Number of tmpbufs created */
 } cnt;
 
 static void print_stats (void) {
@@ -90,8 +87,6 @@ static void print_stats (void) {
 	       "\"txerr\":%"PRIu64", "
 	       "\"kafka_drerr\":%"PRIu64", "
 	       "\"trunc\":%"PRIu64", "
-	       "\"scratch_toosmall\":%"PRIu64", "
-	       "\"scratch_tmpbufs\":%"PRIu64", "
 	       "\"seq\":%"PRIu64" "
 	       "} }\n",
 	       (unsigned long long)time(NULL),
@@ -99,8 +94,6 @@ static void print_stats (void) {
 	       cnt.txerr,
 	       cnt.kafka_drerr,
 	       cnt.trunc,
-	       cnt.scratch_toosmall,
-	       cnt.scratch_tmpbufs,
 	       conf.sequence_number);
 }
 
@@ -300,7 +293,7 @@ static inline int is_scratch_ptr (const struct logline *lp, const char *ptr) {
 static inline void scratch_rewind (struct logline *lp, const char *ptr,
 				   size_t len) {
 
-	/* Can only rewind scratch buffer, not tmpbuffers */
+	/* Can only rewind scratch buffer */
 	if (!is_scratch_ptr(lp, ptr))
 		return;
 
@@ -313,43 +306,15 @@ static inline void scratch_rewind (struct logline *lp, const char *ptr,
  * Allocate persistent memory space ('len' bytes) in
  * logline 'lp's scratch buffer.
  */
-static inline char *scratch_alloc (struct logline *lp, int len) {
+static inline char *scratch_alloc (struct logline *lp, size_t len) {
 	char *ptr;
 
-	if (unlikely(lp->sof + len > conf.scratch_size)) {
-		struct tmpbuf *tmpbuf;
-
-		cnt.scratch_toosmall++;
-
-		/* Scratch pad is too small: walk tmpbuffers to find
-		 * one with enough free space. */
-		tmpbuf = lp->tmpbuf;
-		while (tmpbuf) {
-			if (tmpbuf->of + len < tmpbuf->size)
-				break;
-			tmpbuf = tmpbuf->next;
-		}
-
-		/* No (usable) tmpbuf found, allocate a new one. */
-		if (!tmpbuf) {
-			size_t bsize = len < 512 ? 512 : len;
-			tmpbuf = malloc(sizeof(*tmpbuf) + bsize);
-			tmpbuf->size = bsize;
-			tmpbuf->of = 0;
-			/* Insert at head of tmpbuf list */
-			tmpbuf->next = lp->tmpbuf;
-			lp->tmpbuf = tmpbuf;
-			cnt.scratch_tmpbufs++;
-		}
-
-		ptr = tmpbuf->buf + tmpbuf->of;
-		assert(len <= INT_MAX - tmpbuf->of); /* integer overflow */
-		tmpbuf->of += len;
-		return ptr;
+	if (unlikely(len > conf.scratch_size || (conf.scratch_size - len) < lp->sof)) {
+		vk_log("SCRATCH", LOG_CRIT, "Ran out of scratch_size, limit is %zu", conf.scratch_size);
+		exit(99);
 	}
 
 	ptr = lp->scratch + lp->sof;
-	assert(len <= INT_MAX - lp->sof); /* integer overflow */
 	lp->sof += len;
 	return ptr;
 }
@@ -1523,17 +1488,8 @@ static void render_match (struct logline *lp, uint64_t seq) {
  * Resets the given logline and makes it ready for accumulating a new request.
  */
 static void logline_reset (struct logline *lp) {
-	struct tmpbuf *tmpbuf;
-
 	/* Clear logline, except for scratch pad since it will be overwritten */
 	memset(lp->match, 0, fconf.fmt_cnt * sizeof(*lp->match));
-
-	/* Free temporary buffers */
-	while ((tmpbuf = lp->tmpbuf)) {
-		lp->tmpbuf = tmpbuf->next;
-		free(tmpbuf);
-	}
-
 	lp->seq       = 0;
 	lp->sof       = 0;
 	lp->t_last    = time(NULL);
@@ -1884,7 +1840,7 @@ int main (int argc, char **argv) {
 	conf.daemonize = 1;
 	conf.datacopy  = 1;
 	conf.tag_size_max   = 2048;
-	conf.scratch_size   = 4096;
+	conf.scratch_size   = 4 * 1024 * 1024; // 4MB
 	conf.stats_interval = 60;
 	conf.stats_file     = strdup("/tmp/varnishkafka.stats.json");
 	conf.log_kafka_msg_error = 1;

@@ -56,17 +56,6 @@ struct match {
 
 
 /**
- * Temporary scratch buffer
- */
-struct tmpbuf {
-	struct tmpbuf *next;
-	size_t size;
-	int    of;
-	char   buf[0];  /* Must be at end of struct: allocated to '.size' */
-};
-
-
-/**
  * Currently parsed logline
  */
 struct logline {
@@ -79,11 +68,8 @@ struct logline {
 	/* Last use of this logline */
 	time_t   t_last;
 
-	/* Auxillery buffers (if scratch pad is not sufficient) */
-	struct tmpbuf *tmpbuf;
-
 	/* Scratch pad */
-	int      sof;
+	size_t   sof;
 	char     scratch[0];  /* Must be at end of struct.
 			       * Allocated to conf.scratch_size bytes */
 };

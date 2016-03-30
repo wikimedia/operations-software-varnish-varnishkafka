@@ -134,9 +134,9 @@ logline.data.copy = true
 # Size of per logline scratch buffer.
 # The scratch buffer is used as a temporary storage space while
 # collecting tags for the log line.
-# If the scratch size is too small the logline tag match will be incomplete.
-# Defaults to 4096 bytes.
-#logline.scratch.size = 4096
+# If the scratch size is too small the daemon will error-exit
+# Defaults to 4MB
+#logline.scratch.size = 4194304
 
 
 # Start for sequence number (%n)
