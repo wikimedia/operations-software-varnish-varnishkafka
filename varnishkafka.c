@@ -1544,22 +1544,14 @@ static void logline_reset (struct logline *lp) {
  * Returns a new logline
  */
 static struct logline *logline_get (void) {
-	char *ptr;
 	struct logline *lp;
 
 	/* Allocate and set up new logline */
-	lp = malloc(sizeof(*lp) + conf.scratch_size +
-		    (fconf.fmt_cnt * sizeof(*lp->match)));
-	memset(lp, 0, sizeof(*lp));
-
-	ptr = (char *)(lp+1) + conf.scratch_size;
-	size_t msize = fconf.fmt_cnt * sizeof(*lp->match);
-	lp->match = (struct match *)ptr;
-	memset(lp->match, 0, msize);
+	lp = calloc(1, sizeof(*lp) + conf.scratch_size);
+	lp->match = calloc(fconf.fmt_cnt, sizeof(*lp->match));
 
 	return lp;
 }
-
 
 
 /**
