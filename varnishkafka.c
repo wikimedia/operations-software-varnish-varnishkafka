@@ -121,6 +121,7 @@ static char *const_string_add (const char *in, size_t inlen) {
 			/* Reallocate buffer to fit new string (and more) */
 			const_string_size = (const_string_size + inlen + 64)*2;
 			const_string = realloc(const_string, const_string_size);
+			assert(const_string);
 		}
 
 		/* Append new string */
@@ -1531,8 +1532,6 @@ static int tag_match (struct logline *lp, int spec, enum VSL_tag_e tagid,
  */
 static int parse_tag(struct logline* lp, struct VSL_transaction *t)
 {
-	int    is_complete = 0;
-
 	/* Data carried by the transaction's current cursor */
 	enum VSL_tag_e tag = VSL_TAG(t->c->rec.ptr);
 	const char * tag_data = VSL_CDATA(t->c->rec.ptr);
@@ -1561,7 +1560,7 @@ static int parse_tag(struct logline* lp, struct VSL_transaction *t)
 	}
 
 	/* Accumulate matched tag content */
-	if (likely(!(is_complete = tag_match(lp, spec, tag, tag_data, len))))
+	if (likely(!tag_match(lp, spec, tag, tag_data, len)))
 		return conf.pret;
 
 	/* Log line is complete: render & output (stdout or kafka) */
@@ -1990,7 +1989,6 @@ int main (int argc, char **argv) {
 	struct timespec wait_for;
 	wait_for.tv_sec = 0;
 	wait_for.tv_nsec = 10000000L;
-	int dispatch_status = 0;
 
 	/* Creating a new logline (will be re-used across log transactions) */
 	struct logline *lp = NULL;
@@ -1998,7 +1996,7 @@ int main (int argc, char **argv) {
 		return -1;
 
 	while (conf.run) {
-		dispatch_status = VSLQ_Dispatch(conf.vslq, transaction_scribe, lp);
+		int dispatch_status = VSLQ_Dispatch(conf.vslq, transaction_scribe, lp);
 
 		/* Nothing to read from the shm handle, sleeping */
 		if (dispatch_status == 0)
