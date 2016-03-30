@@ -1304,7 +1304,7 @@ static void rate_limiters_rollover (time_t now) {
  * Rate limiter.
  * Returns 1 if the threshold has been reached (DROP), or 0 if not (PASS)
  */
-static inline int rate_limit (rl_type_t type) {
+static int rate_limit (rl_type_t type) {
 	struct rate_limiter *rl = &rate_limiters[type];
 
 	if (++rl->total > conf.log_rate) {
@@ -1543,7 +1543,7 @@ static void logline_reset (struct logline *lp) {
 /**
  * Returns a new logline
  */
-static inline struct logline *logline_get (void) {
+static struct logline *logline_get (void) {
 	char *ptr;
 	struct logline *lp;
 
