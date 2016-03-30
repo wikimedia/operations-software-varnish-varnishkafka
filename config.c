@@ -181,9 +181,7 @@ static int conf_set (const char *name, const char *val,
 				 "try \"stdout\" or \"kafka\"", val);
 			return -1;
 		}
-	} else if (!strcmp(name, "logline.data.copy"))
-		conf.datacopy = conf_tof(val);
-	else if (!strcmp(name, "logline.scratch.size"))
+	} else if (!strcmp(name, "logline.scratch.size"))
 		conf.scratch_size = atoi(val);
 	else if (!strcmp(name, "varnish.arg.q")) {
 		conf.q_flag = 1;

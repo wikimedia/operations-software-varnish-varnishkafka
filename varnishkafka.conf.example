@@ -102,18 +102,6 @@ output = kafka
 #tag.size.max = 2048
 
 
-# EXPERIMENTAL
-# Indicates if the log tag data read from VSL files should be copied instantly
-# when read (true). If this is set to false the data is assumed to be
-# persistent (for the duration of collecting and formatting a single request)
-# and no copies will be made, thus improving performance.
-#
-# NOTE:
-#   Must be set to true for offline files (-r file..) due to the way
-#   libvarnishapi reads its data.
-logline.data.copy = true
-
-
 # TUNING
 # Logline cache hash tuning
 # 'logline.hash.size * logline.hash.max' dictates the maximum number of

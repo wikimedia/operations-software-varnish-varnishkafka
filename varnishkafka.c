@@ -46,6 +46,7 @@
 #include <syslog.h>
 #include <netdb.h>
 #include <limits.h>
+#include <stdbool.h>
 
 #include <vapi/vsm.h>
 #include <vapi/vsl.h>
@@ -111,11 +112,10 @@ static size_t const_string_len  = 0;
  * Adds a constant string to the constant string area.
  * If the string is already found in the area, return it instead.
  */
-static char *const_string_add (const char *in, int inlen) {
+static char *const_string_add (const char *in, size_t inlen) {
 	char *ret;
 	const char *instr = strndupa(in, inlen);
 
-	assert(inlen >= 0);
 	if (!const_string || !(ret = strstr(const_string, instr))) {
 		if (const_string_len + inlen + 1 >= const_string_size) {
 			/* Reallocate buffer to fit new string (and more) */
@@ -144,12 +144,12 @@ static UNUSED void fmt_dump (void) {
 	     fconf.fmt_cnt, fconf.fmt_size);
 	for (i = 0 ; i < fconf.fmt_cnt ; i++) {
 		struct fmt *fmt = &fconf.fmt[i];
-		_DBG(" #%-3i  fmt %i (%c)  var \"%s\", def (%i)\"%.*s\"%s",
+		_DBG(" #%-3i  fmt %i (%c)  var \"%s\", def (%zu)\"%.*s\"%s",
 		     i,
 		     fmt->id,
 		     isprint(fmt->id) ? (char)fmt->id : ' ',
 		     fmt->var ? : "",
-		     fmt->deflen, fmt->deflen,
+		     fmt->deflen, (int)fmt->deflen,
 		     fmt->def,
 		     fmt->flags & FMT_F_ESCAPE ? ", escape" : "");
 	}
@@ -234,8 +234,8 @@ static int format_add (int fmtr, const char *var, ssize_t varlen,
  */
 static int tag_add (struct fmt *fmt, int spec, int tagid,
 		    const char *var, ssize_t varlen, int col,
-		    int (*parser) (const struct tag *tag, struct logline *lp,
-				   const char *ptr, int len),
+		    size_t (*parser) (const struct tag *tag, struct logline *lp,
+				   const char *ptr, size_t len),
 		    int tag_flags) {
 	struct tag *tag;
 
@@ -271,42 +271,10 @@ static int tag_add (struct fmt *fmt, int spec, int tagid,
 }
 
 
-
-static inline void match_assign0 (const struct tag *tag, struct logline *lp,
-				  const char *ptr, int len);
-static void match_assign (const struct tag *tag, struct logline *lp,
-			  const char *ptr, int len);
-
-
-
-
 /**
- * Returns true if 'ptr' is within 'lp's scratch pad, else false.
+ * Allocate persistent memory space ('len' bytes) in lp scratch
  */
-static inline int is_scratch_ptr (const struct logline *lp, const char *ptr) {
-	return (lp->scratch <= ptr && ptr < lp->scratch + conf.scratch_size);
-}
-
-/**
- * Rewinds (deallocates) the last allocation by 'len' bytes.
- */
-static inline void scratch_rewind (struct logline *lp, const char *ptr,
-				   size_t len) {
-
-	/* Can only rewind scratch buffer */
-	if (!is_scratch_ptr(lp, ptr))
-		return;
-
-	assert(lp->sof >= len);
-	lp->sof -= len;
-}
-
-
-/**
- * Allocate persistent memory space ('len' bytes) in
- * logline 'lp's scratch buffer.
- */
-static inline char *scratch_alloc (struct logline *lp, size_t len) {
+static char *scratch_alloc (struct logline *lp, size_t len) {
 	char *ptr;
 
 	if (unlikely(len > conf.scratch_size || (conf.scratch_size - len) < lp->sof)) {
@@ -321,47 +289,22 @@ static inline char *scratch_alloc (struct logline *lp, size_t len) {
 
 
 /**
- * Helper that allocates 'len' bytes in the scratch buffer and
- * writes the contents of 'src' there.
+ * essentially, scratch_alloc + memcpy
  */
-static inline int scratch_write (const struct tag *tag, struct logline *lp,
-				 const char *src, int len) {
+static char *scratch_cpy (struct logline *lp, const char *src, size_t len) {
 	char *dst;
 
 	dst = scratch_alloc(lp, len);
 	memcpy(dst, src, len);
-
-	match_assign(tag, lp, dst, len);
-
-	return len;
-}
-
-/**
- * Same as scratch_write0() but calls match_assign0() directly, thus
- * not supporting escaping.
- */
-static inline int scratch_write0 (const struct tag *tag, struct logline *lp,
-				 const char *src, int len) {
-	char *dst;
-
-	dst = scratch_alloc(lp, len);
-
-	memcpy(dst, src, len);
-
-	match_assign0(tag, lp, dst, len);
-
-	return len;
+	return dst;
 }
 
 
 /**
- * Writes 'src' of 'len' bytes to scratch buffer, escaping
- * all unprintable characters as well as the ones defined in 'map' below.
- * Returns -1 on error.
+ * like scratch_cpy, but escapes all unprintable characters as well as the
+ * ones defined in 'map' below.  sets *len to the escaped length of the result
  */
-static inline int scratch_write_escaped (const struct tag *tag,
-					 struct logline *lp,
-					 const char *src, int len) {
+static char* scratch_cpy_esc (struct logline *lp, const char *src, size_t* len) {
 	static const char *map[256] = {
 		['\t'] = "\\t",
 		['\n'] = "\\n",
@@ -371,20 +314,18 @@ static inline int scratch_write_escaped (const struct tag *tag,
 		['"']  = "\\\"",
 		[' ']  = "\\ ",
 	};
-	char *dst;
-	char *dstend;
-	char *d;
-	const char *s, *srcend = src + len;
+
 
 	/* Allocate initial space for escaped string.
 	 * The maximum expansion size per character is 5 (octal coding). */
-	dst = scratch_alloc(lp, len * 5);
-	dstend = dst + (len * 5);
+	const size_t in_len = *len;
+	char dst[in_len * 5];
+	char *d = dst;
+	const char *s = src;
+	const char *srcend = src + in_len;
 
-	s = src;
-	d = dst;
 	while (s < srcend) {
-		int outlen = 1;
+		size_t outlen = 1;
 		const char *out;
 		char tmp[6];
 
@@ -401,7 +342,7 @@ static inline int scratch_write_escaped (const struct tag *tag,
 			out = s;
 		}
 
-		assert(d + outlen < dstend);
+		assert(outlen < (in_len * 5));
 
 		if (likely(outlen == 1)) {
 			*(d++) = *out;
@@ -413,80 +354,73 @@ static inline int scratch_write_escaped (const struct tag *tag,
 		s++;
 	}
 
-	/* Rewind scratch pad to reclaim unused memory. */
-	scratch_rewind(lp, dst, (int)(dstend-d));
-
-	/* Assign new matched string */
-	match_assign0(tag, lp, dst, (int)(d-dst));
-
-	return 0;
+	assert(d > dst);
+	const size_t out_len = d - dst;
+	*len = out_len;
+	return scratch_cpy(lp, dst, out_len);
 }
 
+
 /**
- * Helper that allocates enough space in the scratch buffer to fit
- * the string produced by 'fmt...'.
+ * sprintf into a new scratch allocation.  *len_out will be set to the length
+ * of the result in the scratch.
  */
 __attribute__((format(printf,3,4)))
-static inline int scratch_printf (const struct tag *tag, struct logline *lp,
-				  const char *fmt, ...) {
+static char* scratch_printf (struct logline *lp, size_t* len_out, const char *fmt, ...) {
 	va_list ap, ap2;
 	int r;
-	char *dst;
 
 	va_copy(ap2, ap);
 	va_start(ap2, fmt);
 	r = vsnprintf(NULL, 0, fmt, ap2);
 	va_end(ap2);
 
-	dst = scratch_alloc(lp, r+1);
+	assert(r > 0);
+	size_t rst = (size_t)r;
+
+	*len_out = rst;
+	char *dst = scratch_alloc(lp, rst + 1);
 
 	va_start(ap, fmt);
 	vsnprintf(dst, r+1, fmt, ap);
 	va_end(ap);
 
-	match_assign(tag, lp, dst, r);
-
-	return r;
+	return dst;
 }
 
-static inline void match_assign0 (const struct tag *tag, struct logline *lp,
-				  const char *ptr, int len) {
-	assert(len >= 0);
+/**
+ * raw assign to lp->match, only used by match_assign() below
+ */
+static void match_assign0 (const struct tag *tag, struct logline *lp,
+				  const char *ptr, size_t len) {
 	lp->match[tag->fmt->idx].ptr = ptr;
 	lp->match[tag->fmt->idx].len = len;
 }
 
 
 /**
- * Assign 'PTR' of size 'LEN' as a match for 'TAG' in logline 'LP'.
+ * Assign 'ptr' of size 'len' as a match for 'tag' in logline 'lp'.
  *
- * 'PTR' must be a pointer to persistent memory:
- *   - either VSL shared memory (original VSL tag payload)
- *   - or to a buffer allocated in the 'LP' scratch buffer.
+ * if 'ptr' is non-persistent (e.g. stack allocation, as opposed to original
+ * VSL shm tag payload), you must set force_copy to 'true'
  */
 static void match_assign (const struct tag *tag, struct logline *lp,
-			  const char *ptr, int len) {
+			  const char *ptr, size_t len, bool force_copy) {
 
 	if (unlikely(tag->fmt->flags & FMT_F_ESCAPE)) {
-		/* If 'ptr' is in the scratch pad; rewind the scratch pad
-		 * since we'll be re-writing the string escaped. */
-		if (is_scratch_ptr(lp, ptr)) {
-			const char *optr = ptr;
-			ptr = strndupa(ptr, len);
-			scratch_rewind(lp, optr, len);
-		}
-		scratch_write_escaped(tag, lp, ptr, len);
+		size_t len_io = len;
+		char* escaped = scratch_cpy_esc(lp, ptr, &len_io);
+		match_assign0(tag, lp, escaped, len_io);
 	} else {
-		if (conf.datacopy) /* copy volatile data */
-			scratch_write0(tag, lp, ptr, len);
+		if (force_copy) /* copy volatile data */
+			match_assign0(tag, lp, scratch_cpy(lp, ptr, len), len);
 		else  /* point to persistent data */
 			match_assign0(tag, lp, ptr, len);
 	}
 }
 
 
-
-static char *strnchr_noconst (char *s, int len, int c) {
+static char *strnchr_noconst (char *s, size_t len, int c) {
 	char *end = s + len;
 	while (s < end) {
 		if (*s == c)
@@ -497,7 +431,7 @@ static char *strnchr_noconst (char *s, int len, int c) {
 	return NULL;
 }
 
-static const char *strnchr (const char *s, int len, int c) {
+static const char *strnchr (const char *s, size_t len, int c) {
 	const char *end = s + len;
 	while (s < end) {
 		if (*s == c)
@@ -513,7 +447,7 @@ static const char *strnchr (const char *s, int len, int c) {
  * Looks for any matching character from 'match' in 's' and returns
  * a pointer to the first match, or NULL if none of 'match' matched 's'.
  */
-static const char *strnchrs (const char *s, int len, const char *match) {
+static const char *strnchrs (const char *s, size_t len, const char *match) {
 	const char *end = s + len;
 	char map[256] = {};
 	while (*match)
@@ -538,8 +472,8 @@ static const char *strnchrs (const char *s, int len, const char *match) {
  *
  * NOTE: Columns start at 1.
  */
-static int column_get (int col, char delim, const char *ptr, int len,
-		       const char **dst, int *dstlen) {
+static int column_get (int col, char delim, const char *ptr, size_t len,
+		       const char **dst, size_t *dstlen) {
 	const char *s = ptr;
 	const char *b = s;
 	const char *end = s + len;
@@ -553,7 +487,7 @@ static int column_get (int col, char delim, const char *ptr, int len,
 
 		if (s != b && col == ++i) {
 			*dst = b;
-			*dstlen = (int)(s - b);
+			*dstlen = (s - b);
 			return 1;
 		}
 
@@ -562,7 +496,7 @@ static int column_get (int col, char delim, const char *ptr, int len,
 
 	if (s != b && col == ++i) {
 		*dst = b;
-		*dstlen = (int)(s - b);
+		*dstlen = (s - b);
 		return 1;
 	}
 
@@ -579,46 +513,45 @@ static int column_get (int col, char delim, const char *ptr, int len,
 /**
  * Parse a URL (without query string) retrieved from a tag's payload.
  */
-static int parse_U (const struct tag *tag, struct logline *lp,
-		    const char *ptr, int len) {
+static size_t parse_U (const struct tag *tag, struct logline *lp,
+		    const char *ptr, size_t len) {
 	const char *qs;
-	int slen = len;
+	size_t slen = len;
 
 	// Remove the query string if present
 	if ((qs = strnchr(ptr, len, '?')))
-		slen = (int)(qs - ptr);
+		slen = (qs - ptr);
 
-	match_assign(tag, lp, ptr, slen);
+	match_assign(tag, lp, ptr, slen, false);
 	return slen;
 }
 
 /**
  * Parse a query-string retrieved from a tag's payload.
  */
-static int parse_q (const struct tag *tag, struct logline *lp,
-		    const char *ptr, int len) {
+static size_t parse_q (const struct tag *tag, struct logline *lp,
+		    const char *ptr, size_t len) {
 	const char *qs;
-	int slen = len;
+	size_t slen = len;
 
 	if (!(qs = strnchr(ptr, len, '?')))
 		return 0;
 
-	slen = len - (int)(qs - ptr);
+	slen = len - (qs - ptr);
 
-	match_assign(tag, lp, qs, slen);
+	match_assign(tag, lp, qs, slen, false);
 	return slen;
 }
 
 /**
  * Parse a timestamp retrieved from a tag's payload.
  */
-static int parse_t (const struct tag *tag, struct logline *lp,
-		    const char *ptr, int len) {
+static size_t parse_t (const struct tag *tag, struct logline *lp,
+		    const char *ptr, size_t len) {
 	struct tm tm;
-	char *dst;
 	const char *timefmt = "[%d/%b/%Y:%T %z]";
 	const int timelen   = 64;
-	int tlen;
+	size_t tlen;
 
 	/* Use config-supplied time formatting */
 	if (tag->var)
@@ -633,28 +566,22 @@ static int parse_t (const struct tag *tag, struct logline *lp,
 		localtime_r(&t, &tm);
 	}
 
-	dst = scratch_alloc(lp, timelen);
+	char dst[timelen];
 
 	/* Format time string */
 	tlen = strftime(dst, timelen, timefmt, &tm);
 
-	/* Redeem unused space */
-	if (likely(tlen < timelen))
-		scratch_rewind(lp, dst, timelen-tlen);
-
-	match_assign(tag, lp, dst, tlen);
-
+	match_assign(tag, lp, dst, tlen, true);
 	return tlen;
 }
 
-static int parse_auth_user (const struct tag *tag, struct logline *lp,
-			    const char *ptr, int len) {
-	int rlen = len - 6/*"basic "*/;
-	int ulen;
-	char *tmp;
+static size_t parse_auth_user (const struct tag *tag, struct logline *lp,
+			    const char *ptr, size_t len) {
+	size_t rlen = len - 6/*"basic "*/;
+	size_t ulen;
 	char *q;
 
-	if (unlikely(rlen <= 0 || strncasecmp(ptr, "basic ", 6) || (rlen % 2)))
+	if (unlikely(rlen == 0 || strncasecmp(ptr, "basic ", 6) || (rlen % 2)))
 		return 0;
 
 	/* Calculate base64 decoded length */
@@ -665,7 +592,7 @@ static int parse_auth_user (const struct tag *tag, struct logline *lp,
 	if (unlikely(ulen > 1000))
 		return 0;
 
-	tmp = alloca(ulen+1);
+	char tmp[ulen + 1];
 
 	if ((ulen = VB64_decode2(tmp, ulen, ptr+6, rlen)) <= 0)
 		return 0;
@@ -674,31 +601,36 @@ static int parse_auth_user (const struct tag *tag, struct logline *lp,
 	if ((q = strnchr_noconst(tmp, ulen, ':')))
 		*q = '\0';
 
-	return scratch_write(tag, lp, tmp, strlen(tmp));
+	const size_t out_len = strlen(tmp);
+	match_assign(tag, lp, tmp, out_len, true);
+	return out_len;
 }
 
 
 /* The VCL_call is used for several info; this function matches the only
  * ones that varnishkafka cares about and discards the other ones.
  */
-static int parse_vcl_handling (const struct tag *tag, struct logline *lp,
-			   const char *ptr, int len) {
+static size_t parse_vcl_handling (const struct tag *tag, struct logline *lp,
+			   const char *ptr, size_t len) {
 	if ((len == 3 && !strncmp(ptr, "HIT", 3)) ||
 	    (len == 4 && (!strncmp(ptr, "MISS", 4) ||
 			  !strncmp(ptr, "PASS", 4)))) {
-		match_assign(tag, lp, ptr, len);
+		match_assign(tag, lp, ptr, len, false);
 		return len;
 	}
 	return 0;
 }
 
-static int parse_seq (const struct tag *tag, struct logline *lp,
-		      const char *ptr UNUSED, int len UNUSED) {
-	return scratch_printf(tag, lp, "%"PRIu64, conf.sequence_number);
+static size_t parse_seq (const struct tag *tag, struct logline *lp,
+		      const char *ptr UNUSED, size_t len UNUSED) {
+	size_t len_out = 0;
+	char* out = scratch_printf(lp, &len_out, "%"PRIu64, conf.sequence_number);
+	match_assign(tag, lp, out, len_out, false);
+	return len_out;
 }
 
-static int parse_DT (const struct tag *tag, struct logline *lp,
-		     const char *ptr, int len) {
+static size_t parse_DT (const struct tag *tag, struct logline *lp,
+		     const char *ptr, size_t len) {
 
 	/* SLT_Timestamp logs timing info in ms */
 	double time_taken_ms;
@@ -709,13 +641,17 @@ static int parse_DT (const struct tag *tag, struct logline *lp,
 	if (!(time_taken_ms = atof(strndupa(ptr, len))))
 		return 0;
 
+	size_t len_out = 0;
+
 	if (tag->fmt->id == (int)'D') {
-		return scratch_printf(tag, lp, "%.0f", time_taken_ms * 1000000.0f);
+		char* out = scratch_printf(lp, &len_out, "%.0f", time_taken_ms * 1000000.0f);
+		match_assign(tag, lp, out, len_out, false);
 	} else if (tag->fmt->id == (int)'T') {
-		return scratch_printf(tag, lp, "%f", time_taken_ms);
-	} else {
-		return 0;
+		char* out = scratch_printf(lp, &len_out, "%f", time_taken_ms);
+		match_assign(tag, lp, out, len_out, false);
 	}
+
+	return len_out;
 }
 
 
@@ -821,9 +757,9 @@ static int format_parse (const char *format_orig,
 			int col;
 			/* Parser to manually extract and/or convert a
 			 * tag's content. */
-			int (*parser) (const struct tag *tag,
+			size_t (*parser) (const struct tag *tag,
 				       struct logline *lp,
-				       const char *ptr, int len);
+				       const char *ptr, size_t len);
 			/* Optional tag->flags */
 			int tag_flags;
 		} f[4+1]; /* increase size when necessary (max used size + 1) */
@@ -1370,7 +1306,7 @@ static void render_match_string (struct logline *lp) {
 	/* Render each formatter in order. */
 	for (i = 0 ; i < fconf.fmt_cnt ; i++) {
 		const void *ptr;
-		int len = lp->match[i].len;
+		size_t len = lp->match[i].len;
 
 		/* Either use accumulated value, or the default value. */
 		if (len) {
@@ -1413,7 +1349,7 @@ static void render_match_json (struct logline *lp) {
 	/* Render each formatter in order. */
 	for (i = 0 ; i < fconf.fmt_cnt ; i++) {
 		const void *ptr;
-		int len = lp->match[i].len;
+		size_t len = lp->match[i].len;
 
 		/* Skip constant strings */
 		if (fconf.fmt[i].id == 0)
@@ -1517,13 +1453,13 @@ static struct logline *logline_get (void) {
  * Returns 1 if the line is done and can be rendered, else 0.
  */
 static int tag_match (struct logline *lp, int spec, enum VSL_tag_e tagid,
-		      const char *ptr, int len) {
+		      const char *ptr, size_t len) {
 	const struct tag *tag;
 
 	/* Iterate through all handlers for this tag. */
 	for (tag = conf.tag[tagid] ; tag ; tag = tag->next) {
 		const char *ptr2;
-		int len2;
+		size_t len2;
 
 		/* Value already assigned */
 		if (lp->match[tag->fmt->idx].ptr)
@@ -1575,7 +1511,7 @@ static int tag_match (struct logline *lp, int spec, enum VSL_tag_e tagid,
 
 		} else {
 			/* Fallback to verbatim field. */
-			match_assign(tag, lp, ptr2, len2);
+			match_assign(tag, lp, ptr2, len2, false);
 		}
 
 	}
@@ -1838,7 +1774,6 @@ int main (int argc, char **argv) {
 	conf.log_rate  = 100;
 	conf.log_rate_period = 60;
 	conf.daemonize = 1;
-	conf.datacopy  = 1;
 	conf.tag_size_max   = 2048;
 	conf.scratch_size   = 4 * 1024 * 1024; // 4MB
 	conf.stats_interval = 60;

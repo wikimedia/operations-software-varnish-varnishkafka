@@ -51,7 +51,7 @@
  */
 struct match {
 	const char *ptr;
-	int         len;
+	size_t     len;
 };
 
 
@@ -84,9 +84,9 @@ struct tag {
 	int    spec;
 	int    tag;
 	char  *var;
-	int    varlen;
-	int  (*parser) (const struct tag *tag, struct logline *lp,
-			const char *ptr, int len);
+	size_t varlen;
+	size_t (*parser) (const struct tag *tag, struct logline *lp,
+			const char *ptr, size_t len);
 	int    col;
 	int    flags;
 #define TAG_F_NOVARMATCH  0x1  /* Dont attempt to match tag->var to input */
@@ -100,9 +100,9 @@ struct fmt {
 	int   idx;        /* fmt[] array index */
 	const char *var;  /* variable name  (for %{..}x,i,o) */
 	const char *def;  /* default string, typically "-" */
-	int   deflen;     /* default string's length */
+	size_t    deflen; /* default string's length */
 	const char *name; /* field name (for JSON, et.al) */
-	int   namelen;    /* name length */
+	size_t   namelen; /* name length */
 	enum {
 		FMT_TYPE_STRING,
 		FMT_TYPE_NUMBER,
@@ -149,7 +149,6 @@ struct conf {
 	uint64_t    sequence_number;
 
 	size_t      scratch_size;    /* Size of scratch buffer */
-	int         datacopy;
 	fmt_enc_t   fmt_enc;
 	int         total_fmt_cnt;
 	int         tag_size_max;    /* Maximum tag size to accept without
