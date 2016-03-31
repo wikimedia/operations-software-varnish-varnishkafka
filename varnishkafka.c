@@ -817,7 +817,8 @@ static int format_parse (const char *format_orig,
 				 * The contents of VARNAME: header line(s)
 				 * in the request sent to the server.
 				 */
-				{ VSL_CLIENTMARKER, SLT_ReqHeader }
+				{ VSL_CLIENTMARKER, SLT_ReqHeader,
+				  .tag_flags = TAG_F_LAST }
 			} },
 		['l'] = { {
 				{ VSL_CLIENTMARKER }
@@ -835,11 +836,13 @@ static int format_parse (const char *format_orig,
 				 * The contents of VARNAME: header line(s)
 				 * in the response sent to the server.
 				 */
-				{ VSL_CLIENTMARKER, SLT_RespHeader }
+				{ VSL_CLIENTMARKER, SLT_RespHeader,
+				  .tag_flags = TAG_F_LAST }
 			} },
 		['s'] = { {
 				/* The response HTTP status */
-				{ VSL_CLIENTMARKER, SLT_RespStatus }
+				{ VSL_CLIENTMARKER, SLT_RespStatus,
+				  .tag_flags = TAG_F_LAST }
 			} },
 		['t'] = { {
 				/* Time the request was received */
@@ -1462,8 +1465,8 @@ static int tag_match (struct logline *lp, int spec, enum VSL_tag_e tagid,
 		const char *ptr2;
 		size_t len2;
 
-		/* Value already assigned */
-		if (lp->match[tag->fmt->idx].ptr)
+		/* Only use first tag data seen, unless TAG_F_LAST */
+		if (!(tag->flags & TAG_F_LAST) && lp->match[tag->fmt->idx].ptr)
 			continue;
 
 		/* Match spec (client or backend) */

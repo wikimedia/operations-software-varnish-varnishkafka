@@ -90,6 +90,7 @@ struct tag {
 	int    col;
 	int    flags;
 #define TAG_F_NOVARMATCH  0x1  /* Dont attempt to match tag->var to input */
+#define TAG_F_LAST        0x2  /* If multiple, log last one not first one */
 };
 
 /**
