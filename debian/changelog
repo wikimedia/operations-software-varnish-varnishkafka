@@ -1,3 +1,22 @@
+varnishkafka (1.0.8-2) jessie-wikimedia; urgency=medium
+
+  * Depend on varnish 4.1.2 instead of 4 to avoid the issues we have seen
+    on cp1043. Tags where not reported at all and rebuilding against 4.1.2
+    solved the problem.
+
+ -- Emanuele Rocca <ema@wikimedia.org>  Thu, 31 Mar 2016 11:12:53 +0000
+
+varnishkafka (1.0.8-1) jessie-wikmiedia; urgency=medium
+
+  * New upstream release: code ported to Varnish 4 VSL API.
+    Changes included up to https://gerrit.wikimedia.org/r/#/c/280612/
+    Change-Id: I9bf698859005050172bd05dc68ec5f19531a9ddf
+  * Add versioned dependency on varnish >= 4.
+  * Add myself to Uploaders.
+  * Bump Standards-Version.
+
+ -- Emanuele Rocca <ema@wikimedia.org>  Thu, 31 Mar 2016 10:37:57 +0000
+
 varnishkafka (1.0.7-1) jessie-wikmiedia; urgency=medium
 
   * allow config lines up to 4K length
