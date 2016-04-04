@@ -40,7 +40,6 @@
 #include <stdlib.h>
 #include <time.h>
 
-#include <varnish/varnishapi.h>
 #include <librdkafka/rdkafka.h>
 
 #include "varnishkafka.h"
@@ -50,6 +49,7 @@
  * varnishkafka global configuration
  */
 struct conf conf;
+struct fmt_conf fconf;
 
 
 /**
@@ -78,7 +78,7 @@ static fmt_enc_t encoding_parse (const char *val) {
 	else if (!strcasecmp(val, "json"))
 		return VK_ENC_JSON;
 	else
-		return -1;
+		return VK_ENC_INVALID;
 }
 
 
@@ -128,21 +128,12 @@ static int conf_set (const char *name, const char *val,
 	else if (!strcmp(name, "kafka.partition"))
 		conf.partition = atoi(val);
 	else if (!strcmp(name, "format"))
-		conf.format[FMT_CONF_MAIN] = strdup(val);
+		conf.format = strdup(val);
 	else if (!strcmp(name, "format.type")) {
-		if ((conf.fconf[FMT_CONF_MAIN].encoding =
-		     encoding_parse(val)) == -1) {
+		if ((fconf.encoding =
+		     encoding_parse(val)) == VK_ENC_INVALID) {
 			snprintf(errstr, errstr_size,
 				 "Unknown format.type value \"%s\"", val);
-			return -1;
-		}
-	} else if (!strcmp(name, "format.key"))
-		conf.format[FMT_CONF_KEY] = strdup(val);
-	else if (!strcmp(name, "format.key.type")) {
-		if ((conf.fconf[FMT_CONF_KEY].encoding =
-		     encoding_parse(val)) == -1) {
-			snprintf(errstr, errstr_size,
-				 "Unknown format.key.type value \"%s\"", val);
 			return -1;
 		}
 	} else if (!strcmp(name, "tag.size.max"))
@@ -190,41 +181,17 @@ static int conf_set (const char *name, const char *val,
 				 "try \"stdout\" or \"kafka\"", val);
 			return -1;
 		}
-	} else if (!strcmp(name, "logline.data.copy"))
-		conf.datacopy = conf_tof(val);
-	else if (!strcmp(name, "logline.hash.size"))
-		conf.loglines_hsize = atoi(val);
-	else if (!strcmp(name, "logline.hash.max"))
-		conf.loglines_hmax = atoi(val);
-	else if (!strcmp(name, "logline.scratch.size"))
+	} else if (!strcmp(name, "logline.scratch.size"))
 		conf.scratch_size = atoi(val);
-	else if (!strncmp(name, "varnish.arg.", strlen("varnish.arg."))) {
-		const char *t = name + strlen("varnish.arg.");
-		int r = 0;
-		if (*t == '-')
-			t++;
-
-		/* Pass arbitrary arguments to standard varnish arg parser */
-		if ((r = VSL_Arg(vd, *t, strdup(val))) == -1) {
-			snprintf(errstr, errstr_size,
-				 "Error setting \"%s\" to \"%s\"",
-				 name, val);
-			return -1;
-		} else if (r == 0) {
-			snprintf(errstr, errstr_size,
-				 "\"-%s\" is not a valid varnish VSL argument",
-				 name + strlen("varnish.arg."));
-			return -1;
-		}
-
-		/* Special post-handling for some varnish arguments. */
-		switch (*t)
-		{
-		case 'm':
-			conf.m_flag = 1;
-			break;
-		}
-
+	else if (!strcmp(name, "varnish.arg.q")) {
+		conf.q_flag = 1;
+		conf.q_flag_query = strdup(val);
+	} else if (!strcmp(name, "varnish.arg.n")) {
+		conf.n_flag = 1;
+		conf.n_flag_name = strdup(val);
+	} else if (!strcmp(name, "varnish.arg.N")) {
+		conf.N_flag = 1;
+		conf.N_flag_path = strdup(val);
 	} else {
 		snprintf(errstr, errstr_size,
 			 "Unknown configuration property \"%s\"\n", name);

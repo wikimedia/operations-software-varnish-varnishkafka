@@ -11,9 +11,7 @@ Copyright (c) 2013 [Magnus Edenhill](http://www.edenhill.se/)
 
 **varnishkafka** is a varnish log collector with an integrated Apache Kafka
 producer.
-It was written from scratch with performance and modularity in mind,
-**varnishkafka** consumes about a third of the CPU that varnishncsa does and
-has a far more frugal memory approach.
+It was written from scratch with performance and modularity in mind.
 
 # Supported outputs and formats
 
@@ -28,6 +26,13 @@ Currently supported output formats:
  * json   - output as JSON with configurable field, field types and names.
 
 New formats and outputs can easily be added.
+
+# Varnish 4 compatibility
+
+Varnishkafka is fully compatible with the new Varnish 4 API, but since they changed
+a lot from the previous version we had to break compatibility with Varnish 3.
+If you want to use Varnishkafka with Varnish 3, please check the related branch.
+New features will be added only to this branch from now on.
 
 # Configuration
 

@@ -5,24 +5,24 @@
  * Copyright (c) 2013 Magnus Edenhill <vk@edenhill.se>
  *
  * All rights reserved.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met: 
- * 
+ * modification, are permitted provided that the following conditions are met:
+ *
  * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer. 
+ *    this list of conditions and the following disclaimer.
  * 2. Redistributions in binary form must reproduce the above copyright notice,
  *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution. 
- * 
+ *    and/or other materials provided with the distribution.
+ *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE 
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE 
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE 
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR 
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF 
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS 
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN 
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
  * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
@@ -46,8 +46,13 @@
 #include <syslog.h>
 #include <netdb.h>
 #include <limits.h>
+#include <stdbool.h>
 
-#include <varnish/varnishapi.h>
+#include <vapi/vsm.h>
+#include <vapi/vsl.h>
+#include <vapi/voptget.h>
+#include <vdef.h>
+
 #include <librdkafka/rdkafka.h>
 
 #include <yajl/yajl_common.h>
@@ -57,35 +62,12 @@
 #include "varnishkafka.h"
 #include "base64.h"
 
-
 /* Kafka handle */
 static rd_kafka_t *rk;
 /* Kafka topic */
 static rd_kafka_topic_t *rkt;
 
-/* Varnish shared memory handle*/
-struct VSM_data *vd;
-
-const char *conf_file_path = VARNISHKAFKA_CONF_PATH;
-
-
-static const char *fmt_conf_names[] = {
-	[FMT_CONF_MAIN] = "Main",
-	[FMT_CONF_KEY]  = "Key"
-};
-
-/**
- * Logline cache
- */
-static struct {
-	LIST_HEAD(, logline) lps;    /* Current loglines in bucket */
-	int                  cnt;    /* Current number of loglines in bucket */
-	uint64_t             hit;    /* Cache hits */
-	uint64_t             miss;   /* Cache misses */
-	uint64_t             purge;  /* Cache entry purges (bucket full) */
-} *loglines;
-
-static int logline_cnt = 0; /* Current number of loglines in memory */
+static const char *conf_file_path = VARNISHKAFKA_CONF_PATH;
 
 static void logrotate(void);
 
@@ -97,9 +79,6 @@ static struct {
 	uint64_t txerr;            /* Transmit failures */
 	uint64_t kafka_drerr;      /* Kafka: message delivery errors */
 	uint64_t trunc;            /* Truncated tags */
-	uint64_t scratch_toosmall; /* Scratch buffer was too small and
-				    * a temporary buffer was required. */
-	uint64_t scratch_tmpbufs;  /* Number of tmpbufs created */
 } cnt;
 
 static void print_stats (void) {
@@ -109,9 +88,6 @@ static void print_stats (void) {
 	       "\"txerr\":%"PRIu64", "
 	       "\"kafka_drerr\":%"PRIu64", "
 	       "\"trunc\":%"PRIu64", "
-	       "\"scratch_toosmall\":%"PRIu64", "
-	       "\"scratch_tmpbufs\":%"PRIu64", "
-	       "\"lp_curr\":%i, "
 	       "\"seq\":%"PRIu64" "
 	       "} }\n",
 	       (unsigned long long)time(NULL),
@@ -119,9 +95,6 @@ static void print_stats (void) {
 	       cnt.txerr,
 	       cnt.kafka_drerr,
 	       cnt.trunc,
-	       cnt.scratch_toosmall,
-	       cnt.scratch_tmpbufs,
-	       logline_cnt,
 	       conf.sequence_number);
 }
 
@@ -139,16 +112,16 @@ static size_t const_string_len  = 0;
  * Adds a constant string to the constant string area.
  * If the string is already found in the area, return it instead.
  */
-static char *const_string_add (const char *in, int inlen) {
+static char *const_string_add (const char *in, size_t inlen) {
 	char *ret;
 	const char *instr = strndupa(in, inlen);
 
-	assert(inlen >= 0);
 	if (!const_string || !(ret = strstr(const_string, instr))) {
 		if (const_string_len + inlen + 1 >= const_string_size) {
 			/* Reallocate buffer to fit new string (and more) */
 			const_string_size = (const_string_size + inlen + 64)*2;
 			const_string = realloc(const_string, const_string_size);
+			assert(const_string);
 		}
 
 		/* Append new string */
@@ -165,27 +138,28 @@ static char *const_string_add (const char *in, int inlen) {
 /**
  * Print parsed format string: formatters
  */
-static __attribute__((unused)) void fmt_dump (const struct fmt_conf *fconf) {
+static UNUSED void fmt_dump (void) {
 	int i;
 
-	_DBG("%s %i/%i formats:",
-	     fmt_conf_names[fconf->fid], fconf->fmt_cnt, fconf->fmt_size);
-	for (i = 0 ; i < fconf->fmt_cnt ; i++) {
-		_DBG(" #%-3i  fmt %i (%c)  var \"%s\", def (%i)\"%.*s\"%s",
+	_DBG("Main %i/%i formats:",
+	     fconf.fmt_cnt, fconf.fmt_size);
+	for (i = 0 ; i < fconf.fmt_cnt ; i++) {
+		struct fmt *fmt = &fconf.fmt[i];
+		_DBG(" #%-3i  fmt %i (%c)  var \"%s\", def (%zu)\"%.*s\"%s",
 		     i,
-		     fconf->fmt[i].id,
-		     isprint(fconf->fmt[i].id) ? (char)fconf->fmt[i].id : ' ',
-		     fconf->fmt[i].var ? : "",
-		     fconf->fmt[i].deflen, fconf->fmt[i].deflen,
-		     fconf->fmt[i].def,
-		     fconf->fmt[i].flags & FMT_F_ESCAPE ? ", escape" : "");
+		     fmt->id,
+		     isprint(fmt->id) ? (char)fmt->id : ' ',
+		     fmt->var ? : "",
+		     fmt->deflen, (int)fmt->deflen,
+		     fmt->def,
+		     fmt->flags & FMT_F_ESCAPE ? ", escape" : "");
 	}
 }
 
 /**
  * Print parser format string: tags
  */
-static __attribute__((unused)) void tag_dump (void) {
+static UNUSED void tag_dump (void) {
 	int i;
 
 	_DBG("Tags:");
@@ -213,34 +187,33 @@ static __attribute__((unused)) void tag_dump (void) {
 /**
  * Adds a parsed formatter to the list of formatters
  */
-static int format_add (struct fmt_conf *fconf, int fmtr,
-		       const char *var, ssize_t varlen,
+static int format_add (int fmtr, const char *var, ssize_t varlen,
 		       const char *def, ssize_t deflen,
-		       int flags,
-		       char *errstr, size_t errstr_size) {
+		       int flags) {
 	struct fmt *fmt;
 
-	if (fconf->fmt_cnt >= fconf->fmt_size) {
-		fconf->fmt_size = (fconf->fmt_size ? : 32) * 2;
-		fconf->fmt = realloc(fconf->fmt,
-				     fconf->fmt_size * sizeof(*fconf->fmt));
+	if (fconf.fmt_cnt >= fconf.fmt_size) {
+		fconf.fmt_size = (fconf.fmt_size ? : 32) * 2;
+		fconf.fmt = realloc(fconf.fmt,
+				     fconf.fmt_size * sizeof(*fconf.fmt));
 	}
 
-	fmt = &fconf->fmt[fconf->fmt_cnt];
+	fmt = &fconf.fmt[fconf.fmt_cnt];
 	memset(fmt, 0, sizeof(*fmt));
 
 	fmt->id    = fmtr;
-	fmt->idx   = fconf->fmt_cnt;
+	fmt->idx   = fconf.fmt_cnt;
 	fmt->flags = flags;
 	if (var) {
 		if (varlen == -1)
 			varlen = strlen(var);
-
-		fmt->var = malloc(varlen+1);
-		memcpy((char *)fmt->var, var, varlen);
-		((char *)fmt->var)[varlen] = '\0';
-	} else
+		char* fvar = malloc(varlen+1);
+		memcpy(fvar, var, varlen);
+		fvar[varlen] = '\0';
+		fmt->var = fvar;
+	} else {
 		fmt->var = NULL;
+	}
 
 	if (!def)
 		def = "-";
@@ -250,7 +223,7 @@ static int format_add (struct fmt_conf *fconf, int fmtr,
 	fmt->deflen = deflen;
 	fmt->def = const_string_add(def, deflen);
 
-	fconf->fmt_cnt++;
+	fconf.fmt_cnt++;
 
 	return fmt->idx;
 }
@@ -260,14 +233,11 @@ static int format_add (struct fmt_conf *fconf, int fmtr,
 /**
  * Adds a parsed tag to the list of tags
  */
-static int tag_add (struct fmt_conf *fconf, struct fmt *fmt,
-		    int spec, int tagid,
-		    const char *var, ssize_t varlen,
-		    int col,
-		    int (*parser) (const struct tag *tag, struct logline *lp,
-				   const char *ptr, int len),
-		    int tag_flags,
-		    char *errstr, size_t errstr_size) {
+static int tag_add (struct fmt *fmt, int spec, int tagid,
+		    const char *var, ssize_t varlen, int col,
+		    size_t (*parser) (const struct tag *tag, struct logline *lp,
+				   const char *ptr, size_t len),
+		    int tag_flags) {
 	struct tag *tag;
 
 	tag = calloc(1, sizeof(*tag));
@@ -285,7 +255,6 @@ static int tag_add (struct fmt_conf *fconf, struct fmt *fmt,
 	tag->fmt    = fmt;
 	tag->parser = parser;
 	tag->flags  = tag_flags;
-	tag->fid    = fconf->fid;
 
 	if (var) {
 		if (varlen == -1)
@@ -295,133 +264,48 @@ static int tag_add (struct fmt_conf *fconf, struct fmt *fmt,
 		tag->varlen = varlen;
 		memcpy(tag->var, var, varlen);
 		tag->var[varlen] = '\0';
-	} else
+	} else {
 		tag->var = NULL;
+	}
 
 	return 0;
 }
-		     
-
-
-static inline void match_assign0 (const struct tag *tag, struct logline *lp,
-				  const char *ptr, int len);
-static void match_assign (const struct tag *tag, struct logline *lp,
-			  const char *ptr, int len);
-
-
 
 
 /**
- * Returns true if 'ptr' is within 'lp's scratch pad, else false.
+ * Allocate persistent memory space ('len' bytes) in lp scratch
  */
-static inline int is_scratch_ptr (const struct logline *lp, const char *ptr) {
-	return (lp->scratch <= ptr && ptr < lp->scratch + conf.scratch_size);
-}
-
-/**
- * Rewinds (deallocates) the last allocation by 'len' bytes.
- */
-static inline void scratch_rewind (struct logline *lp, const char *ptr,
-				   size_t len) {
-
-	/* Can only rewind scratch buffer, not tmpbuffers */
-	if (!is_scratch_ptr(lp, ptr))
-		return;
-
-	assert(lp->sof >= len);
-	lp->sof -= len;
-}
-
-
-/**
- * Allocate persistent memory space ('len' bytes) in 
- * logline 'lp's scratch buffer.
- */
-static inline char *scratch_alloc (const struct tag *tag, struct logline *lp,
-				   int len) {
+static char *scratch_alloc (struct logline *lp, size_t len) {
 	char *ptr;
 
-	if (unlikely(lp->sof + len > conf.scratch_size)) {
-		struct tmpbuf *tmpbuf;
-
-		cnt.scratch_toosmall++;
-
-		/* Scratch pad is too small: walk tmpbuffers to find
-		 * one with enough free space. */
-		tmpbuf = lp->tmpbuf;
-		while (tmpbuf) {
-			if (tmpbuf->of + len < tmpbuf->size)
-				break;
-			tmpbuf = tmpbuf->next;
-		}
-
-		/* No (usable) tmpbuf found, allocate a new one. */
-		if (!tmpbuf) {
-			size_t bsize = len < 512 ? 512 : len;
-			tmpbuf = malloc(sizeof(*tmpbuf) + bsize);
-			tmpbuf->size = bsize;
-			tmpbuf->of = 0;
-			/* Insert at head of tmpbuf list */
-			tmpbuf->next = lp->tmpbuf;
-			lp->tmpbuf = tmpbuf;
-			cnt.scratch_tmpbufs++;
-		}
-
-		ptr = tmpbuf->buf + tmpbuf->of;
-		assert(len <= INT_MAX - tmpbuf->of); /* integer overflow */
-		tmpbuf->of += len;
-		return ptr;
+	if (unlikely(len > conf.scratch_size || (conf.scratch_size - len) < lp->sof)) {
+		vk_log("SCRATCH", LOG_CRIT, "Ran out of scratch_size, limit is %zu", conf.scratch_size);
+		exit(99);
 	}
 
 	ptr = lp->scratch + lp->sof;
-	assert(len <= INT_MAX - lp->sof); /* integer overflow */
 	lp->sof += len;
 	return ptr;
 }
 
 
 /**
- * Helper that allocates 'len' bytes in the scratch buffer and
- * writes the contents of 'src' there.
+ * essentially, scratch_alloc + memcpy
  */
-static inline int scratch_write (const struct tag *tag, struct logline *lp,
-				 const char *src, int len) {
+static char *scratch_cpy (struct logline *lp, const char *src, size_t len) {
 	char *dst;
 
-	dst = scratch_alloc(tag, lp, len);
+	dst = scratch_alloc(lp, len);
 	memcpy(dst, src, len);
-
-	match_assign(tag, lp, dst, len);
-
-	return len;
-}
-
-/**
- * Same as scratch_write0() but calls match_assign0() directly, thus
- * not supporting escaping.
- */
-static inline int scratch_write0 (const struct tag *tag, struct logline *lp,
-				 const char *src, int len) {
-	char *dst;
-
-	dst = scratch_alloc(tag, lp, len);
-
-	memcpy(dst, src, len);
-
-	match_assign0(tag, lp, dst, len);
-
-	return len;
+	return dst;
 }
 
 
 /**
- * Writes 'src' of 'len' bytes to scratch buffer, escaping
- * all unprintable characters as well as the ones defined in 'map' below.
- * Returns -1 on error.
+ * like scratch_cpy, but escapes all unprintable characters as well as the
+ * ones defined in 'map' below.  sets *len to the escaped length of the result
  */
-static inline int scratch_write_escaped (const struct tag *tag,
-					 struct logline *lp,
-					 const char *src, int len) {
+static char* scratch_cpy_esc (struct logline *lp, const char *src, size_t* len) {
 	static const char *map[256] = {
 		['\t'] = "\\t",
 		['\n'] = "\\n",
@@ -431,43 +315,39 @@ static inline int scratch_write_escaped (const struct tag *tag,
 		['"']  = "\\\"",
 		[' ']  = "\\ ",
 	};
-	char *dst;
-	char *dstend;
-	char *d;
-	const char *s, *srcend = src + len;
+
 
 	/* Allocate initial space for escaped string.
 	 * The maximum expansion size per character is 5 (octal coding). */
-	dst = scratch_alloc(tag, lp, len * 5);
-	dstend = dst + (len * 5);
+	const size_t in_len = *len;
+	char dst[in_len * 5];
+	char *d = dst;
+	const char *s = src;
+	const char *srcend = src + in_len;
 
-	s = src;
-	d = dst;
 	while (s < srcend) {
-		int outlen = 1;
+		size_t outlen = 1;
 		const char *out;
 		char tmp[6];
 
 		if (unlikely((out = map[(int)*s]) != NULL)) {
 			/* Escape from 'map' */
 			outlen = 2;
-
 		} else if (unlikely(!isprint(*s))) {
 			/* Escape non-printables as \<octal> */
 			sprintf(tmp, "\%04o", (int)*s);
 			out = tmp;
 			outlen = 5;
-
 		} else {
 			/* No escaping */
 			out = s;
 		}
 
-		assert(d + outlen < dstend);
+		assert(outlen < (in_len * 5));
 
-		if (likely(outlen == 1))
+		if (likely(outlen == 1)) {
 			*(d++) = *out;
-		else {
+		} else {
 			memcpy(d, out, outlen);
 			d += outlen;
 		}
@@ -475,91 +355,88 @@ static inline int scratch_write_escaped (const struct tag *tag,
 		s++;
 	}
 
-	/* Rewind scratch pad to reclaim unused memory. */
-	scratch_rewind(lp, dst, (int)(dstend-d));
-
-	/* Assign new matched string */
-	match_assign0(tag, lp, dst, (int)(d-dst));
-
-	return 0;
+	assert(d > dst);
+	const size_t out_len = d - dst;
+	*len = out_len;
+	return scratch_cpy(lp, dst, out_len);
 }
 
+
 /**
- * Helper that allocates enough space in the scratch buffer to fit
- * the string produced by 'fmt...'.
+ * sprintf into a new scratch allocation.  *len_out will be set to the length
+ * of the result in the scratch.
  */
-static inline int scratch_printf (const struct tag *tag, struct logline *lp,
-				  const char *fmt, ...) {
+__attribute__((format(printf,3,4)))
+static char* scratch_printf (struct logline *lp, size_t* len_out, const char *fmt, ...) {
 	va_list ap, ap2;
 	int r;
-	char *dst;
 
 	va_copy(ap2, ap);
 	va_start(ap2, fmt);
 	r = vsnprintf(NULL, 0, fmt, ap2);
 	va_end(ap2);
 
-	dst = scratch_alloc(tag, lp, r+1);
+	assert(r > 0);
+	size_t rst = (size_t)r;
+
+	*len_out = rst;
+	char *dst = scratch_alloc(lp, rst + 1);
 
 	va_start(ap, fmt);
 	vsnprintf(dst, r+1, fmt, ap);
 	va_end(ap);
 
-	match_assign(tag, lp, dst, r);
-
-	return r;
+	return dst;
 }
 
-static inline int scratch_printf (const struct tag *tag, struct logline *lp,
-				  const char *fmt, ...)
-	__attribute__((format(printf,3,4)));
-
-
-
-
-static inline void match_assign0 (const struct tag *tag, struct logline *lp,
-				  const char *ptr, int len) {
-	assert(len >= 0);
-	lp->match[tag->fid][tag->fmt->idx].ptr = ptr;
-	lp->match[tag->fid][tag->fmt->idx].len = len;
+/**
+ * raw assign to lp->match, only used by match_assign() below
+ */
+static void match_assign0 (const struct tag *tag, struct logline *lp,
+				  const char *ptr, size_t len) {
+	lp->match[tag->fmt->idx].ptr = ptr;
+	lp->match[tag->fmt->idx].len = len;
 }
 
 
 /**
- * Assign 'PTR' of size 'LEN' as a match for 'TAG' in logline 'LP'.
+ * Assign 'ptr' of size 'len' as a match for 'tag' in logline 'lp'.
  *
- * 'PTR' must be a pointer to persistent memory:
- *   - either VSL shared memory (original VSL tag payload)
- *   - or to a buffer allocated in the 'LP' scratch buffer.
+ * if 'ptr' is non-persistent (e.g. stack allocation, as opposed to original
+ * VSL shm tag payload), you must set force_copy to 'true'
  */
 static void match_assign (const struct tag *tag, struct logline *lp,
-			  const char *ptr, int len) {
+			  const char *ptr, size_t len, bool force_copy) {
 
 	if (unlikely(tag->fmt->flags & FMT_F_ESCAPE)) {
-		/* If 'ptr' is in the scratch pad; rewind the scratch pad
-		 * since we'll be re-writing the string escaped. */
-		if (is_scratch_ptr(lp, ptr)) {
-			const char *optr = ptr;
-			ptr = strndupa(ptr, len);
-			scratch_rewind(lp, optr, len);
-		}
-		scratch_write_escaped(tag, lp, ptr, len);
-
+		size_t len_io = len;
+		char* escaped = scratch_cpy_esc(lp, ptr, &len_io);
+		match_assign0(tag, lp, escaped, len_io);
 	} else {
-		if (conf.datacopy) /* copy volatile data */
-			scratch_write0(tag, lp, ptr, len);
+		if (force_copy) /* copy volatile data */
+			match_assign0(tag, lp, scratch_cpy(lp, ptr, len), len);
 		else  /* point to persistent data */
 			match_assign0(tag, lp, ptr, len);
 	}
 }
 
 
+static char *strnchr_noconst (char *s, size_t len, int c) {
+	char *end = s + len;
+	while (s < end) {
+		if (*s == c)
+			return s;
+		s++;
+	}
 
-static char *strnchr (const char *s, int len, int c) {
+	return NULL;
+}
+
+static const char *strnchr (const char *s, size_t len, int c) {
 	const char *end = s + len;
 	while (s < end) {
 		if (*s == c)
-			return (char *)s;
+			return s;
 		s++;
 	}
 
@@ -571,21 +448,21 @@ static char *strnchr (const char *s, int len, int c) {
  * Looks for any matching character from 'match' in 's' and returns
  * a pointer to the first match, or NULL if none of 'match' matched 's'.
  */
-static char *strnchrs (const char *s, int len, const char *match) {
+static const char *strnchrs (const char *s, size_t len, const char *match) {
 	const char *end = s + len;
 	char map[256] = {};
 	while (*match)
 		map[(int)*(match++)] = 1;
-	
+
 	while (s < end) {
 		if (map[(int)*s])
-			return (char *)s;
+			return s;
 		s++;
 	}
 
 	return NULL;
 }
-	
+
 
 /**
  * Splits 'ptr' (with length 'len') by delimiter 'delim' and assigns
@@ -596,8 +473,8 @@ static char *strnchrs (const char *s, int len, const char *match) {
  *
  * NOTE: Columns start at 1.
  */
-static int column_get (int col, char delim, const char *ptr, int len,
-		       const char **dst, int *dstlen) {
+static int column_get (int col, char delim, const char *ptr, size_t len,
+		       const char **dst, size_t *dstlen) {
 	const char *s = ptr;
 	const char *b = s;
 	const char *end = s + len;
@@ -611,7 +488,7 @@ static int column_get (int col, char delim, const char *ptr, int len,
 
 		if (s != b && col == ++i) {
 			*dst = b;
-			*dstlen = (int)(s - b);
+			*dstlen = (s - b);
 			return 1;
 		}
 
@@ -620,7 +497,7 @@ static int column_get (int col, char delim, const char *ptr, int len,
 
 	if (s != b && col == ++i) {
 		*dst = b;
-		*dstlen = (int)(s - b);
+		*dstlen = (s - b);
 		return 1;
 	}
 
@@ -630,97 +507,82 @@ static int column_get (int col, char delim, const char *ptr, int len,
 
 
 /**
- *
  * Misc parsers for formatters
- *
+ * (check format_parse() for more info)
  */
-static int parse_BackendOpen (const struct tag *tag, struct logline *lp,
-			      const char *ptr, int len) {
-	const char *s;
-	int slen;
-	const int deflen = strlen("default");
 
-	if (unlikely(!column_get(1, ' ', ptr, len, &s, &slen)))
-		return 0;
-
-	if (slen == deflen && !strncmp(s, "default", slen))
-		column_get(2, ' ', ptr, len, &s, &slen);
-
-	match_assign(tag, lp, s, slen);
-
-	return 0;
-}	
-
-static int parse_U (const struct tag *tag, struct logline *lp,
-		    const char *ptr, int len) {
+/**
+ * Parse a URL (without query string) retrieved from a tag's payload.
+ */
+static size_t parse_U (const struct tag *tag, struct logline *lp,
+		    const char *ptr, size_t len) {
 	const char *qs;
-	int slen = len;
+	size_t slen = len;
 
+	// Remove the query string if present
 	if ((qs = strnchr(ptr, len, '?')))
-		slen = (int)(qs - ptr);
+		slen = (qs - ptr);
 
-	match_assign(tag, lp, ptr, slen);
+	match_assign(tag, lp, ptr, slen, false);
 	return slen;
 }
 
-static int parse_q (const struct tag *tag, struct logline *lp,
-		    const char *ptr, int len) {
+/**
+ * Parse a query-string retrieved from a tag's payload.
+ */
+static size_t parse_q (const struct tag *tag, struct logline *lp,
+		    const char *ptr, size_t len) {
 	const char *qs;
-	int slen = len;
+	size_t slen = len;
 
 	if (!(qs = strnchr(ptr, len, '?')))
 		return 0;
 
-	slen = len - (int)(qs - ptr);
+	slen = len - (qs - ptr);
 
-	match_assign(tag, lp, qs, slen);
+	match_assign(tag, lp, qs, slen, false);
 	return slen;
 }
 
-static int parse_t (const struct tag *tag, struct logline *lp,
-		    const char *ptr, int len) {
+/**
+ * Parse a timestamp retrieved from a tag's payload.
+ */
+static size_t parse_t (const struct tag *tag, struct logline *lp,
+		    const char *ptr, size_t len) {
 	struct tm tm;
-	char *dst;
 	const char *timefmt = "[%d/%b/%Y:%T %z]";
 	const int timelen   = 64;
-	int tlen;
+	size_t tlen;
 
 	/* Use config-supplied time formatting */
 	if (tag->var)
 		timefmt = tag->var;
 
-	if (tag->tag == SLT_TxHeader) {
+	if (tag->tag == SLT_BereqHeader) {
 		if (unlikely(!strptime(strndupa(ptr, len),
 				       "%a, %d %b %Y %T", &tm)))
 			return 0;
-
 	} else {
 		time_t t = strtoul(ptr, NULL, 10);
 		localtime_r(&t, &tm);
 	}
 
-	dst = scratch_alloc(tag, lp, timelen);
+	char dst[timelen];
 
 	/* Format time string */
 	tlen = strftime(dst, timelen, timefmt, &tm);
 
-	/* Redeem unused space */
-	if (likely(tlen < timelen))
-		scratch_rewind(lp, dst, timelen-tlen);
-
-	match_assign(tag, lp, dst, tlen);
-
+	match_assign(tag, lp, dst, tlen, true);
 	return tlen;
 }
 
-static int parse_auth_user (const struct tag *tag, struct logline *lp,
-			    const char *ptr, int len) {
-	int rlen = len - 6/*"basic "*/;
-	int ulen;
-	char *tmp;
+static size_t parse_auth_user (const struct tag *tag, struct logline *lp,
+			    const char *ptr, size_t len) {
+	size_t rlen = len - 6/*"basic "*/;
+	size_t ulen;
 	char *q;
 
-	if (unlikely(rlen <= 0 || strncasecmp(ptr, "basic ", 6) || (rlen % 2)))
+	if (unlikely(rlen == 0 || strncasecmp(ptr, "basic ", 6) || (rlen % 2)))
 		return 0;
 
 	/* Calculate base64 decoded length */
@@ -731,64 +593,66 @@ static int parse_auth_user (const struct tag *tag, struct logline *lp,
 	if (unlikely(ulen > 1000))
 		return 0;
 
-	tmp = alloca(ulen+1);
+	char tmp[ulen + 1];
 
 	if ((ulen = VB64_decode2(tmp, ulen, ptr+6, rlen)) <= 0)
 		return 0;
 
 	/* Strip password */
-	if ((q = strnchr(tmp, ulen, ':')))
+	if ((q = strnchr_noconst(tmp, ulen, ':')))
 		*q = '\0';
 
-	return scratch_write(tag, lp, tmp, strlen(tmp));
+	const size_t out_len = strlen(tmp);
+	match_assign(tag, lp, tmp, out_len, true);
+	return out_len;
 }
 
 
-static int parse_hitmiss (const struct tag *tag, struct logline *lp,
-			  const char *ptr, int len) {
-	if (len == 3 && !strncmp(ptr, "hit", 3)) {
-		match_assign(tag, lp, ptr, len);
-		return len;
-	} else if (len == 4 &&
-		 (!strncmp(ptr, "miss", 4) ||
-		  !strncmp(ptr, "pass", 4))) {
-		match_assign(tag, lp, "miss", 4);
-		return 4;
-	}
-
-	return 0;
-}
-
-static int parse_handling (const struct tag *tag, struct logline *lp,
-			   const char *ptr, int len) {
-	if ((len == 3 && !strncmp(ptr, "hit", 3)) ||
-	    (len == 4 && (!strncmp(ptr, "miss", 4) ||
-			  !strncmp(ptr, "pass", 4)))) {
-		match_assign(tag, lp, ptr, len);
+/* The VCL_call is used for several info; this function matches the only
+ * ones that varnishkafka cares about and discards the other ones.
+ */
+static size_t parse_vcl_handling (const struct tag *tag, struct logline *lp,
+			   const char *ptr, size_t len) {
+	if ((len == 3 && !strncmp(ptr, "HIT", 3)) ||
+	    (len == 4 && (!strncmp(ptr, "MISS", 4) ||
+			  !strncmp(ptr, "PASS", 4)))) {
+		match_assign(tag, lp, ptr, len, false);
 		return len;
 	}
 	return 0;
 }
 
-static int parse_seq (const struct tag *tag, struct logline *lp,
-		       const char *ptr, int len) {
-	return scratch_printf(tag, lp, "%"PRIu64, conf.sequence_number);
+static size_t parse_seq (const struct tag *tag, struct logline *lp,
+		      const char *ptr UNUSED, size_t len UNUSED) {
+	size_t len_out = 0;
+	char* out = scratch_printf(lp, &len_out, "%"PRIu64, conf.sequence_number);
+	match_assign(tag, lp, out, len_out, false);
+	return len_out;
 }
 
-static int parse_DT (const struct tag *tag, struct logline *lp,
-                     const char *ptr, int len) {
-        double start, stop;
+static size_t parse_DT (const struct tag *tag, struct logline *lp,
+		     const char *ptr, size_t len) {
 
-        if (sscanf(strndupa(ptr, len), "%*d %lf %lf %*d.%*d %*s",
-                   &start, &stop) != 2)
-                return 0;
-        if (tag->fmt->id == (int)'D')
-                return scratch_printf(tag, lp, "%.0f",
-                                      (stop-start) * 1000000.0f);
-        else if (tag->fmt->id == (int)'T')
-                return scratch_printf(tag, lp, "%i", (int)(stop-start));
-        else
-                return 0;
+	/* SLT_Timestamp logs timing info in ms */
+	double time_taken_ms;
+
+	/* ptr points to the original tag string, so we
+	 * need to extract the double field needed
+	 */
+	if (!(time_taken_ms = atof(strndupa(ptr, len))))
+		return 0;
+
+	size_t len_out = 0;
+
+	if (tag->fmt->id == (int)'D') {
+		char* out = scratch_printf(lp, &len_out, "%.0f", time_taken_ms * 1000000.0f);
+		match_assign(tag, lp, out, len_out, false);
+	} else if (tag->fmt->id == (int)'T') {
+		char* out = scratch_printf(lp, &len_out, "%f", time_taken_ms);
+		match_assign(tag, lp, out, len_out, false);
+	}
+
+	return len_out;
 }
 
 
@@ -842,7 +706,7 @@ static char *string_replace_arr (const char *in, const char **arr) {
 				out = realloc(out, outsize);
 				assert(out);
 			}
-			
+
 			memcpy(out+of, to, tolen);
 			of += tolen;
 			s--;
@@ -870,7 +734,7 @@ static char *string_replace_arr (const char *in, const char **arr) {
 /**
  * Parse the format string and build a parsing array.
  */
-static int format_parse (struct fmt_conf *fconf, const char *format_orig,
+static int format_parse (const char *format_orig,
 			 char *errstr, size_t errstr_size) {
 	/**
 	 * Maps a formatter %X to a VSL tag and column id, or parser, or both
@@ -879,116 +743,141 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 		/* A formatter may be backed by multiple tags.
 		 * The first matching tag observed in the log will be used. */
 		struct {
-			/* VSL_S_CLIENT or VSL_S_BACKEND, or both */
+			/* VSL_CLIENTMARKER or VSL_BACKENDMARKER, or both */
 			int spec;
 			/* The SLT_.. tag id */
 			int tag;
-			/* For "Name: Value" tags (such as SLT_RxHeader),
+			/* For "Name: Value" tags (such as SLT_RespHeader),
 			 * this is the "Name" part. */
 			const char *var;
 			/* Special handling for non-name-value vars such as
 			 * %{Varnish:handling}x. fmtvar is "Varnish:handling" */
-			const char *fmtvar; 
+			const char *fmtvar;
 			/* Column to extract:
 			 * 0 for entire string, else 1, 2, .. */
 			int col;
 			/* Parser to manually extract and/or convert a
 			 * tag's content. */
-			int (*parser) (const struct tag *tag,
+			size_t (*parser) (const struct tag *tag,
 				       struct logline *lp,
-				       const char *ptr, int len);
+				       const char *ptr, size_t len);
 			/* Optional tag->flags */
 			int tag_flags;
 		} f[4+1]; /* increase size when necessary (max used size + 1) */
-		
+
 		/* Default string if no matching tag was found or all
 		 * parsers failed, defaults to "-". */
 		const char *def;
 
 	} map[256] = {
 		/* Indexed by formatter character as
-		 * specified by varnishncsa(1) */
+		 * specified by varnishncsa(1).
+		 * Each formatter is associated with
+		 * the structure defined above; please
+		 * note that not all of the fields are mandatory!
+		 *
+		 * Important note: you can see the next
+		 * configurations as pipes. For example,
+		 * setting "SLT_Y, var: X, col:2, parser:foo
+		 * will allow you to match something with a
+		 * Varnish tag named SLT_Y, carrying a payload
+		 * like "X: a b c d e" selecting the second field
+		 * and passing it to a parser function
+		 * (for perf reason the field passed is pointer to
+		 * the start of the substring in the original payload
+		 * plus its length, keep it in mind when writing a parser).
+		 *
+		 */
 		['b'] = { {
-				{ VSL_S_CLIENT, SLT_Length },
-				{ VSL_S_BACKEND, SLT_RxHeader,
-				  var: "content-length" }
+				/* Size of response in bytes, with HTTP headers. */
+				{ VSL_CLIENTMARKER, SLT_ReqAcct, .col = 5}
 			} },
-                ['D'] = { {
-                                { VSL_S_CLIENT, SLT_ReqEnd,
-                                  parser: parse_DT }
-                        } },
-                ['T'] = { {
-                                { VSL_S_CLIENT, SLT_ReqEnd,
-                                  parser: parse_DT }
-                        } },
+		['D'] = { {
+				/* Time taken to serve the request (s) */
+				{ VSL_CLIENTMARKER, SLT_Timestamp,
+				  .var = "Resp", .col = 2,
+				  .parser = parse_DT}
+			} },
+		['T'] = { {
+				/* Time taken to serve the request (s) */
+				{ VSL_CLIENTMARKER, SLT_Timestamp,
+				  .var = "Resp", .col = 2,
+				  .parser = parse_DT}
+			} },
 		['H'] = { {
-				{ VSL_S_CLIENT, SLT_RxProtocol },
-				{ VSL_S_BACKEND, SLT_TxProtocol },
-			}, def: "HTTP/1.0" },
+				/* The request protocol */
+				{ VSL_CLIENTMARKER, SLT_ReqProtocol },
+			}, .def = "HTTP/1.0" },
 		['h'] = { {
-				{ VSL_S_CLIENT, SLT_ReqStart, col: 1 },
-				{ VSL_S_BACKEND, SLT_BackendOpen,
-				  parser: parse_BackendOpen }
+				/* Remote hostname (IP address) */
+				{ VSL_CLIENTMARKER, SLT_ReqStart, .col = 1},
 			} },
-		['i'] = { { 
-				{ VSL_S_CLIENT, SLT_RxHeader },
+		['i'] = { {
+				/* Used as %{VARNAME}i.
+				 * The contents of VARNAME: header line(s)
+				 * in the request sent to the server.
+				 */
+				{ VSL_CLIENTMARKER, SLT_ReqHeader,
+				  .tag_flags = TAG_F_LAST }
 			} },
 		['l'] = { {
-				{ VSL_S_CLIENT|VSL_S_BACKEND },
-			}, def: conf.logname },
+				{ VSL_CLIENTMARKER }
+			}, .def = conf.logname },
 		['m'] = { {
-				{ VSL_S_CLIENT, SLT_RxRequest },
-				{ VSL_S_BACKEND, SLT_TxRequest },
+				/* Request method (GET|POST|..) */
+				{ VSL_CLIENTMARKER, SLT_ReqMethod }
 			} },
 		['q'] = { {
-				{ VSL_S_CLIENT, SLT_RxURL, parser: parse_q },
-				{ VSL_S_BACKEND, SLT_TxURL, parser: parse_q },
-			},  def: "" },
-		['o'] = { { 
-				{ VSL_S_CLIENT, SLT_TxHeader },
+				/* The request query string */
+				{ VSL_CLIENTMARKER, SLT_ReqURL, .parser = parse_q }
+			},  .def = "" },
+		['o'] = { {
+				/* Used as %{VARNAME}o.
+				 * The contents of VARNAME: header line(s)
+				 * in the response sent to the server.
+				 */
+				{ VSL_CLIENTMARKER, SLT_RespHeader,
+				  .tag_flags = TAG_F_LAST }
 			} },
 		['s'] = { {
-				{ VSL_S_CLIENT, SLT_TxStatus },
-				{ VSL_S_BACKEND, SLT_RxStatus },
+				/* The response HTTP status */
+				{ VSL_CLIENTMARKER, SLT_RespStatus,
+				  .tag_flags = TAG_F_LAST }
 			} },
 		['t'] = { {
-				{ VSL_S_CLIENT, SLT_ReqEnd,
-				  parser: parse_t, col: 3,
-				  tag_flags: TAG_F_NOVARMATCH },
-				{ VSL_S_BACKEND, SLT_RxHeader,
-				  var: "date", parser: parse_t,
-				  tag_flags: TAG_F_NOVARMATCH },
+				/* Time the request was received */
+				{ VSL_CLIENTMARKER, SLT_Timestamp,
+				  .col = 2,
+				  .var = "Start",
+				  .parser = parse_t,
+				  .tag_flags = TAG_F_NOVARMATCH }
 			} },
 		['U'] = { {
-				{ VSL_S_CLIENT, SLT_RxURL, parser: parse_U },
-				{ VSL_S_BACKEND, SLT_TxURL, parser: parse_U },
+				/* The URL path requested, not including any query string. */
+				{ VSL_CLIENTMARKER, SLT_ReqURL, .parser = parse_U }
 			} },
 		['u'] = { {
-				{ VSL_S_CLIENT, SLT_RxHeader,
-				  var: "authorization",
-				  parser: parse_auth_user },
-				{ VSL_S_BACKEND, SLT_TxHeader,
-				  var: "authorization",
-				  parser: parse_auth_user },
+				{ VSL_CLIENTMARKER, SLT_RespHeader,
+				  .var = "authorization",
+				  .parser = parse_auth_user }
 			} },
-		['x'] = { { 
-				{ VSL_S_CLIENT, SLT_ReqEnd,
-				  fmtvar: "Varnish:time_firstbyte", col: 5 },
-				{ VSL_S_CLIENT, SLT_ReqEnd,
-				  fmtvar: "Varnish:xid", col: 1 },
-				{ VSL_S_CLIENT, SLT_VCL_call,
-				  fmtvar: "Varnish:hitmiss",
-				  parser: parse_hitmiss },
-				{ VSL_S_CLIENT, SLT_VCL_call,
-				  fmtvar: "Varnish:handling",
-				  parser: parse_handling },
-				{ VSL_S_CLIENT, SLT_VCL_Log,
-				  fmtvar: "VCL_Log:*" },
+		['x'] = { {
+				/* Various Varnish related tags */
+				{ VSL_CLIENTMARKER, SLT_Timestamp,
+				  .var = "Process",
+				  .fmtvar = "Varnish:time_firstbyte", .col = 2 },
+				{ VSL_CLIENTMARKER, SLT_Begin,
+				  .fmtvar = "Varnish:xvid", .col = 2 },
+				{ VSL_CLIENTMARKER, SLT_VCL_call,
+				  .fmtvar = "Varnish:handling",
+				  .parser = parse_vcl_handling },
+				{ VSL_CLIENTMARKER, SLT_VCL_Log,
+				  .fmtvar = "VCL_Log:*" },
 
 			} },
 		['n'] = { {
-				{ VSL_S_CLIENT|VSL_S_BACKEND, VSL_TAG__ONCE,
-				  parser: parse_seq },
+				{ VSL_CLIENTMARKER, VSL_TAG__ONCE,
+				  .parser = parse_seq }
 			} },
 	};
 	/* Replace legacy formatters */
@@ -999,7 +888,7 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 	};
 	const char *s, *t;
 	const char *format;
-	int cnt = 0;
+	int counter = 0;
 
 	/* Perform legacy replacements. */
 	format = string_replace_arr(format_orig, replace);
@@ -1026,12 +915,10 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 
 		/* ".....%... "
 		 *  ^---^  add this part as verbatim string */
-		if (s > t)
-			if (format_add(fconf, 0,
-				       NULL, 0,
-				       t, (int)(s - t),
-				       0, errstr, errstr_size) == -1)
+		if (s > t) {
+			if (format_add(0, NULL, 0, t, (int)(s - t), 0) == -1)
 				return -1;
+		}
 
 		begin = s;
 		s++;
@@ -1100,10 +987,11 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 					q++;
 
 					if ((q2 = strnchrs(q, (int)(b-q2-1),
-							   "@?!")))
+							   "@?!"))) {
 						qlen = (int)(q2-q);
-					else
+					} else {
 						qlen = (int)(b-q);
+					}
 
 					switch (*(q-1))
 					{
@@ -1120,12 +1008,12 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 					case '!':
 						/* Options */
 						if (!strncasecmp(q, "escape",
-								 qlen))
+								 qlen)) {
 							flags |= FMT_F_ESCAPE;
-						else if (!strncasecmp(q, "num",
-								      qlen))
+						} else if (!strncasecmp(q, "num",
+								      qlen)) {
 							type = FMT_TYPE_NUMBER;
-						else {
+						} else {
 							snprintf(errstr,
 								 errstr_size,
 								 "Unknown "
@@ -1141,9 +1029,9 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 					}
 
 				} while ((q = q2));
-
-			} else
-				varlen = (int)(b-a);			
+			} else {
+				varlen = (int)(b-a);
+			}
 
 			s = b+1;
 		}
@@ -1163,19 +1051,18 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 		}
 
 		/* Add formatter to ordered list of formatters */
-		if ((fmtid = format_add(fconf, *s, var, varlen,
-					def, deflen, flags,
-					errstr, errstr_size)) == -1)
+		if ((fmtid = format_add(*s, var, varlen,
+					def, deflen, flags)) == -1)
 			return -1;
 
-		fconf->fmt[fmtid].type = type;
+		fconf.fmt[fmtid].type = type;
 
 		if (name) {
-			fconf->fmt[fmtid].name = name;
-			fconf->fmt[fmtid].namelen = namelen;
+			fconf.fmt[fmtid].name = name;
+			fconf.fmt[fmtid].namelen = namelen;
 		}
 
-		cnt++;
+		counter++;
 
 		/* Now add the matched tags specification to the
 		 * list of parse tags */
@@ -1183,7 +1070,7 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 			if (map[(int)*s].f[i].tag == 0)
 				continue;
 
-			/* mapping has fmtvar specified, make sure it 
+			/* mapping has fmtvar specified, make sure it
 			 * matches the format's variable. */
 			if (map[(int)*s].f[i].fmtvar) {
 				const char *iswc;
@@ -1214,8 +1101,6 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 					/* set format var to "..:<key>" */
 					var = var + fvlen;
 					varlen -= fvlen;
-
-
 				} else {
 					/* Non-wildcard definition.
 					 * Var must match exactly. */
@@ -1231,48 +1116,43 @@ static int format_parse (struct fmt_conf *fconf, const char *format_orig,
 				}
 			}
 
-			if (tag_add(fconf, &fconf->fmt[fmtid],
+			if (tag_add(&fconf.fmt[fmtid],
 				    map[(int)*s].f[i].spec,
 				    map[(int)*s].f[i].tag,
 				    var ? var : map[(int)*s].f[i].var,
 				    var ? varlen : -1,
 				    map[(int)*s].f[i].col,
 				    map[(int)*s].f[i].parser,
-				    map[(int)*s].f[i].tag_flags,
-				    errstr, errstr_size) == -1)
+				    map[(int)*s].f[i].tag_flags
+				   ) == -1)
 				return -1;
 		}
-
 
 		t = ++s;
 	}
 
 	/* "..%x....."
 	 *      ^---^  add this part as verbatim string */
-	if (s > t)
-		if (format_add(fconf, 0, NULL, 0,
-			       t, (int)(s - t), 0,
-			       errstr, errstr_size) == -1)
+	if (s > t) {
+		if (format_add(0, NULL, 0, t, (int)(s - t), 0) == -1)
 			return -1;
+	}
 
 	/* Dump parsed format string. */
 	if (conf.log_level >= 7)
-		fmt_dump(fconf);
+		fmt_dump();
 
-
-	if (fconf->fmt_cnt == 0) {
+	if (fconf.fmt_cnt == 0) {
 		snprintf(errstr, errstr_size,
-			 "%s format string is empty",
-			 fmt_conf_names[fconf->fid]);
+			 "Main format string is empty");
 		return -1;
-	} else if (cnt == 0) {
+	} else if (counter == 0) {
 		snprintf(errstr, errstr_size,
-			 "No %%.. formatters in %s format",
-			 fmt_conf_names[fconf->fid]);
+			 "No %%.. formatters in Main format");
 		return -1;
 	}
 
-	return fconf->fmt_cnt;
+	return fconf.fmt_cnt;
 }
 
 
@@ -1295,11 +1175,11 @@ static struct rate_limiter {
 	const char *name;      /* Rate limiter log message summary */
 	const char *fac;       /* Log facility */
 } rate_limiters[RL_NUM] = {
-	[RL_KAFKA_PRODUCE_ERR] = { name: "Kafka produce errors",
-				   fac: "PRODUCE" },
-	[RL_KAFKA_ERROR_CB] = { name: "Kafka errors", fac: "KAFKAERR" },
-	[RL_KAFKA_DR_ERR] = { name: "Kafka message delivery failures",
-			      fac: "KAFKADR" }
+	[RL_KAFKA_PRODUCE_ERR] = { .name = "Kafka produce errors",
+				   .fac = "PRODUCE" },
+	[RL_KAFKA_ERROR_CB] = { .name = "Kafka errors", .fac = "KAFKAERR" },
+	[RL_KAFKA_DR_ERR] = { .name = "Kafka message delivery failures",
+			      .fac = "KAFKADR" }
 };
 
 static time_t rate_limiter_t_curr; /* Current period */
@@ -1329,7 +1209,7 @@ static void rate_limiters_rollover (time_t now) {
  * Rate limiter.
  * Returns 1 if the threshold has been reached (DROP), or 0 if not (PASS)
  */
-static inline int rate_limit (rl_type_t type) {
+static int rate_limit (rl_type_t type) {
 	struct rate_limiter *rl = &rate_limiters[type];
 
 	if (++rl->total > conf.log_rate) {
@@ -1344,22 +1224,11 @@ static inline int rate_limit (rl_type_t type) {
 /**
  * Kafka outputter
  */
-void out_kafka (struct fmt_conf *fconf, struct logline *lp,
-		const char *buf, size_t len) {
-
-	/* If 'buf' is the key we simply store it for later use
-	 * when the message is produced. */
-	if (fconf->fid == FMT_CONF_KEY) {
-		assert(!lp->key);
-		lp->key = malloc(len);
-		lp->key_len = len;
-		memcpy(lp->key, buf, len);
-		return;
-	}
+void out_kafka (struct logline *lp, const char *buf, size_t len) {
 
 	if (rd_kafka_produce(rkt, conf.partition, RD_KAFKA_MSG_F_COPY,
 			     (void *)buf, len,
-			     lp->key, lp->key_len, NULL) == -1) {
+			     NULL, 0, NULL) == -1) {
 		cnt.txerr++;
 		if (!rate_limit(RL_KAFKA_PRODUCE_ERR))
 			vk_log("PRODUCE", LOG_WARNING,
@@ -1375,31 +1244,28 @@ void out_kafka (struct fmt_conf *fconf, struct logline *lp,
 /**
  * Stdout outputter
  */
-void out_stdout (struct fmt_conf *fconf, struct logline *lp,
-		 const char *buf, size_t len) {
+void out_stdout (struct logline *lp UNUSED, const char *buf, size_t len) {
 	printf("%.*s\n", (int)len, buf);
 }
 
 /**
  * Null outputter
  */
-void out_null (struct fmt_conf *fconf, struct logline *lp,
-	       const char *buf, size_t len) {
+void out_null (struct logline *lp UNUSED, const char *buf UNUSED, size_t len UNUSED) {
 }
 
 
 /**
  * Currently selected outputter.
  */
-void (*outfunc) (struct fmt_conf *fconf, struct logline *lp,
-		 const char *buf, size_t len) = out_kafka;
+void (*outfunc) (struct logline *lp, const char *buf, size_t len) = out_kafka;
 
 
 /**
  * Kafka error callback
  */
-static void kafka_error_cb (rd_kafka_t *rk, int err,
-			    const char *reason, void *opaque) {
+static void kafka_error_cb (rd_kafka_t *rk_arg UNUSED, int err,
+			    const char *reason, void *opaque UNUSED) {
 	if (!rate_limit(RL_KAFKA_ERROR_CB))
 		vk_log("KAFKAERR", LOG_ERR,
 		       "Kafka error (%i): %s", err, reason);
@@ -1412,10 +1278,10 @@ static void kafka_error_cb (rd_kafka_t *rk, int err,
  * NOTE: If the dr callback is not to be used it can be turned off to
  *       improve performance.
  */
-static void kafka_dr_cb (rd_kafka_t *rk,
-			 void *payload, size_t len,
+static void kafka_dr_cb (rd_kafka_t *rk_arg UNUSED,
+			 void *payload UNUSED, size_t len,
 			 int error_code,
-			 void *opaque, void *msg_opaque) {
+			 void *opaque UNUSED, void *msg_opaque UNUSED) {
 	_DBG("Kafka delivery report: error=%i, size=%zd", error_code, len);
 	if (unlikely(error_code)) {
 		cnt.kafka_drerr++;
@@ -1429,29 +1295,29 @@ static void kafka_dr_cb (rd_kafka_t *rk,
 /**
  * Kafka statistics callback.
  */
-static int kafka_stats_cb (rd_kafka_t *rk, char *json, size_t json_len,
-			    void *opaque) {
+static int kafka_stats_cb (rd_kafka_t *rk_arg UNUSED, char *json, size_t json_len UNUSED,
+			    void *opaque UNUSED) {
 	vk_log_stats("{ \"kafka\": %s }\n", json);
 	return 0;
 }
 
 
-static void render_match_string (struct fmt_conf *fconf, struct logline *lp) {
+static void render_match_string (struct logline *lp) {
 	char buf[8192];
 	int  of = 0;
 	int  i;
 
 	/* Render each formatter in order. */
-	for (i = 0 ; i < fconf->fmt_cnt ; i++) {
+	for (i = 0 ; i < fconf.fmt_cnt ; i++) {
 		const void *ptr;
-		int len = lp->match[fconf->fid][i].len;
+		size_t len = lp->match[i].len;
 
 		/* Either use accumulated value, or the default value. */
 		if (len) {
-			ptr = lp->match[fconf->fid][i].ptr;
+			ptr = lp->match[i].ptr;
 		} else {
-			ptr = fconf->fmt[i].def;
-			len = fconf->fmt[i].deflen;
+			ptr = fconf.fmt[i].def;
+			len = fconf.fmt[i].deflen;
 		}
 
 		if (of + len >= sizeof(buf))
@@ -1463,11 +1329,11 @@ static void render_match_string (struct fmt_conf *fconf, struct logline *lp) {
 
 	/* Pass rendered log line to outputter function */
 	cnt.tx++;
-	outfunc(fconf, lp, buf, of);
+	outfunc(lp, buf, of);
 }
 
 
-static void render_match_json (struct fmt_conf *fconf, struct logline *lp) {
+static void render_match_json (struct logline *lp) {
 	yajl_gen g;
 	int      i;
 	const unsigned char *buf;
@@ -1485,33 +1351,33 @@ static void render_match_json (struct fmt_conf *fconf, struct logline *lp) {
 	yajl_gen_map_open(g);
 
 	/* Render each formatter in order. */
-	for (i = 0 ; i < fconf->fmt_cnt ; i++) {
+	for (i = 0 ; i < fconf.fmt_cnt ; i++) {
 		const void *ptr;
-		int len = lp->match[fconf->fid][i].len;
+		size_t len = lp->match[i].len;
 
 		/* Skip constant strings */
-		if (fconf->fmt[i].id == 0)
+		if (fconf.fmt[i].id == 0)
 			continue;
 
 		/* Either use accumulated value, or the default value. */
 		if (len) {
-			ptr = lp->match[fconf->fid][i].ptr;
+			ptr = lp->match[i].ptr;
 		} else {
-			ptr = fconf->fmt[i].def;
-			len = fconf->fmt[i].deflen;
+			ptr = fconf.fmt[i].def;
+			len = fconf.fmt[i].deflen;
 		}
 
 		/* Field name */
-		if (likely(fconf->fmt[i].name != NULL))
-			yajl_gen_string(g, (unsigned char *)fconf->fmt[i].name,
-					fconf->fmt[i].namelen);
-		else {
-			char name = (char)fconf->fmt[i].id;
+		if (likely(fconf.fmt[i].name != NULL)) {
+			yajl_gen_string(g, (const unsigned char *)fconf.fmt[i].name,
+					fconf.fmt[i].namelen);
+		} else {
+			char name = (char)fconf.fmt[i].id;
 			yajl_gen_string(g, (unsigned char *)&name, 1);
 		}
 
 		/* Value */
-		switch (fconf->fmt[i].type)
+		switch (fconf.fmt[i].type)
 		{
 		case FMT_TYPE_STRING:
 			yajl_gen_string(g, ptr, len);
@@ -1532,7 +1398,7 @@ static void render_match_json (struct fmt_conf *fconf, struct logline *lp) {
 	yajl_gen_get_buf(g, &buf, &buflen);
 
 	/* Pass rendered log line to outputter function */
-	outfunc(fconf, lp, (const char *)buf, buflen);
+	outfunc(lp, (const char *)buf, buflen);
 
 	yajl_gen_clear(g);
 	yajl_gen_free(g);
@@ -1542,146 +1408,46 @@ static void render_match_json (struct fmt_conf *fconf, struct logline *lp) {
  * Render an accumulated logline to string and pass it to the output function.
  */
 static void render_match (struct logline *lp, uint64_t seq) {
-	int i;
-
 	lp->seq = seq;
 
-	/* Render fmt_confs in reverse order so KEY is available for MAIN */
-	for (i = conf.fconf_cnt-1 ; i >= 0 ; i--) {
-		struct fmt_conf *fconf = &conf.fconf[i];
-		switch (fconf->encoding)
-		{
-		case VK_ENC_STRING:
-			render_match_string(fconf, lp);
-			break;
-		case VK_ENC_JSON:
-			render_match_json(fconf, lp);
-			break;
-		}
+	switch (fconf.encoding)
+	{
+	case VK_ENC_STRING:
+		render_match_string(lp);
+		break;
+	case VK_ENC_JSON:
+		render_match_json(lp);
+		break;
+	default:
+		assert(0);
+		break;
 	}
 }
-
-
-
-/**
- * Initialize log line lookup hash
- */
-static void loglines_init (void) {
-	loglines = calloc(sizeof(*loglines), conf.loglines_hsize);
-}
-
-/**
- * Returns the hash key (bucket) for a given log id
- */
-#define logline_hkey(id) ((id) % conf.loglines_hsize)
-
 
 /**
  * Resets the given logline and makes it ready for accumulating a new request.
  */
 static void logline_reset (struct logline *lp) {
-	int i;
-	struct tmpbuf *tmpbuf;
-
 	/* Clear logline, except for scratch pad since it will be overwritten */
-
-	for (i = 0 ; i < conf.fconf_cnt ; i++)
-		memset(lp->match[i], 0,
-		       conf.fconf[i].fmt_cnt * sizeof(*lp->match[i]));
-
-	/* Free temporary buffers */
-	while ((tmpbuf = lp->tmpbuf)) {
-		lp->tmpbuf = tmpbuf->next;
-		free(tmpbuf);
-	}
-	
-	if (lp->key) {
-		free(lp->key);
-		lp->key = NULL;
-		lp->key_len = 0;
-	}
-
+	memset(lp->match, 0, fconf.fmt_cnt * sizeof(*lp->match));
 	lp->seq       = 0;
 	lp->sof       = 0;
-	lp->tags_seen = 0;
 	lp->t_last    = time(NULL);
 }
 
 
 /**
- * Free up all loglines.
+ * Returns a new logline
  */
-static void loglines_term (void) {
-	unsigned int hkey;
-	for (hkey = 0 ; hkey < conf.loglines_hsize ; hkey++) {
-		struct logline *lp;
-		while ((lp = LIST_FIRST(&loglines[hkey].lps))) {
-			logline_reset(lp);
-			LIST_REMOVE(lp, link);
-			free(lp);
-			logline_cnt--;
-		}
-	}
-	free(loglines);
-}
-
-
-/**
- * Returns a logline.
- */
-static inline struct logline *logline_get (unsigned int id) {
-	struct logline *lp, *oldest = NULL;
-	unsigned int hkey = logline_hkey(id);
-	int i;
-	char *ptr;
-
-	LIST_FOREACH(lp, &loglines[hkey].lps, link) {
-		if (lp->id == id) {
-			/* Cache hit: return existing logline */
-			loglines[hkey].hit++;
-			return lp;
-		} else if (loglines[hkey].cnt > conf.loglines_hmax &&
-			   lp->tags_seen &&
-			   (!oldest || lp->t_last < oldest->t_last))
-			oldest = lp;
-	}
-
-	/* Cache miss */
-	loglines[hkey].miss++;
-
-	if (oldest) {
-		/* Remove oldest entry.
-		 * We will not loose a log record here since this only
-		 * matches when 'tags_seen' is zero. */
-		LIST_REMOVE(oldest, link);
-		loglines[hkey].cnt--;
-		loglines[hkey].purge++;
-		free(oldest);
-		logline_cnt--;
-	}
+static struct logline *logline_get (void) {
+	struct logline *lp;
 
 	/* Allocate and set up new logline */
-	lp = malloc(sizeof(*lp) + conf.scratch_size +
-		    (conf.total_fmt_cnt * sizeof(*lp->match[0])));
-	memset(lp, 0, sizeof(*lp));
-	lp->id = id;
-	ptr = (char *)(lp+1) + conf.scratch_size;
-	for (i = 0 ; i < conf.fconf_cnt ; i++) {
-		size_t msize = conf.fconf[i].fmt_cnt * sizeof(*lp->match[i]);
-		lp->match[i] = (struct match *)ptr;
-		memset(lp->match[i], 0, msize);
-		ptr += msize;
-	}
-
-	LIST_INSERT_HEAD(&loglines[hkey].lps, lp, link);
-	loglines[hkey].cnt++;
-	logline_cnt++;
+	lp = calloc(1, sizeof(*lp) + conf.scratch_size);
+	lp->match = calloc(fconf.fmt_cnt, sizeof(*lp->match));
 
 	return lp;
 }
-
-
-
 
 
 /**
@@ -1691,38 +1457,39 @@ static inline struct logline *logline_get (unsigned int id) {
  * Returns 1 if the line is done and can be rendered, else 0.
  */
 static int tag_match (struct logline *lp, int spec, enum VSL_tag_e tagid,
-		      const char *ptr, int len) {
+		      const char *ptr, size_t len) {
 	const struct tag *tag;
 
 	/* Iterate through all handlers for this tag. */
 	for (tag = conf.tag[tagid] ; tag ; tag = tag->next) {
 		const char *ptr2;
-		int len2;
+		size_t len2;
 
-		/* Value already assigned */
-		if (lp->match[tag->fid][tag->fmt->idx].ptr)
+		/* Only use first tag data seen, unless TAG_F_LAST */
+		if (!(tag->flags & TAG_F_LAST) && lp->match[tag->fmt->idx].ptr)
 			continue;
 
 		/* Match spec (client or backend) */
 		if (!(tag->spec & spec))
 			continue;
 
-		if (tag->var && !(tag->flags & TAG_F_NOVARMATCH)) {
+		if ((tag->var) && !(tag->flags & TAG_F_NOVARMATCH)) {
 			const char *t;
-			
+
 			/* Variable match ("Varname: value") */
 			if (!(t = strnchr(ptr, len, ':')))
 				continue;
-			
+
 			if (tag->varlen != (int)(t-ptr) ||
 			    strncasecmp(ptr, tag->var, tag->varlen))
 				continue;
 
 			if (likely(len > tag->varlen + 1 /* ":" */)) {
 				ptr2 = t+1; /* ":" */
-                                /* Strip leading whitespaces */
-                                while (*ptr2 == ' ' && ptr2 < ptr+len)
-                                        ptr2++;
+				/* Strip leading whitespaces */
+				while (*ptr2 == ' ' && ptr2 < ptr+len)
+					ptr2++;
+
 				len2 = len - (int)(ptr2-ptr);
 			} else {
 				/* Empty value */
@@ -1736,53 +1503,58 @@ static int tag_match (struct logline *lp, int spec, enum VSL_tag_e tagid,
 		}
 
 		/* Get specified column if specified. */
-		if (tag->col)
-			if (!column_get(tag->col, ' ', ptr2, len2,
-					&ptr2, &len2))
+		if (tag->col) {
+			if (!column_get(tag->col, ' ', ptr2, len2, &ptr2, &len2)) {
 				continue;
+			}
+		}
 
 		if (tag->parser) {
 			/* Pass value to parser which will assign it. */
 			tag->parser(tag, lp, ptr2, len2);
-			
+
 		} else {
 			/* Fallback to verbatim field. */
-			match_assign(tag, lp, ptr2, len2);
+			match_assign(tag, lp, ptr2, len2, false);
 		}
 
 	}
 
 	/* Request end: render the match string. */
-	if (tagid == SLT_ReqEnd)
+	if (tagid == SLT_End)
 		return 1;
 	else
 		return 0;
 }
 
 
-/**
- * VSL_Dispatch() callback called for each tag read from the VSL.
- */
-static int parse_tag (void *priv, enum VSL_tag_e tag, unsigned id,
-		      unsigned len, unsigned spec, const char *ptr,
-		      uint64_t bitmap) {
-	struct logline *lp;
-	int    is_complete = 0;
 
-	if (unlikely(!spec))
+/**
+ * A trasaction cursor (vsl.h) points to a list of tags associated with transaction id.
+ * This function parses the current tag pointed by the cursor.
+ */
+static int parse_tag(struct logline* lp, struct VSL_transaction *t)
+{
+	/* Data carried by the transaction's current cursor */
+	enum VSL_tag_e tag = VSL_TAG(t->c->rec.ptr);
+	const char * tag_data = VSL_CDATA(t->c->rec.ptr);
+
+	/* Avoiding VSL_LEN to prevent \0 termination char
+	 * to be counted causing \u0000 to be displayed in JSON
+	 * encodings.
+	 */
+	long len = strlen(tag_data);
+
+	if (unlikely((!VSL_CLIENT(t->c->rec.ptr) &&
+			(!VSL_BACKEND(t->c->rec.ptr)))))
 		return conf.pret;
 
-	if (0)
-		_DBG("[%u] #%-3i %-12s %c %.*s",
-		     id, tag, VSL_tags[tag],
-		     spec & VSL_S_CLIENT ? 'c' : 'b',
-		     len, ptr);
-
-	if (unlikely(!(lp = logline_get(id))))
-		return -1;
-
-	/* Update bitfield of seen tags (-m regexp) */
-	lp->tags_seen |= bitmap;
+	/* Used by the parser to map Varnish tags with output placeholders.
+	 * Currently VarnishKafka does not process backend tags (discarding the
+	 * related transactions) so this field is not really used anymore, but
+	 * it will be kept in case of future expansions.
+	 */
+	int spec = VSL_CLIENT(t->c->rec.ptr) ? VSL_CLIENTMARKER : VSL_BACKENDMARKER;
 
 	/* Truncate data if exceeding configured max */
 	if (unlikely(len > conf.tag_size_max)) {
@@ -1791,16 +1563,10 @@ static int parse_tag (void *priv, enum VSL_tag_e tag, unsigned id,
 	}
 
 	/* Accumulate matched tag content */
-	if (likely(!(is_complete = tag_match(lp, spec, tag, ptr, len))))
+	if (likely(!tag_match(lp, spec, tag, tag_data, len)))
 		return conf.pret;
 
-	/* Match tag regexp, if any */
-	if (conf.m_flag && !VSL_Matched(vd, lp->tags_seen)) {
-		logline_reset(lp);
-		return conf.pret;
-	}
-	
-	/* Log line is complete: render & output */
+	/* Log line is complete: render & output (stdout or kafka) */
 	render_match(lp, ++conf.sequence_number);
 
 	/* clean up */
@@ -1826,9 +1592,38 @@ static int parse_tag (void *priv, enum VSL_tag_e tag, unsigned id,
 
 
 /**
+ * VSL_Dispatch() callback called for each transaction group read from the VSL.
+ * A transaction is a collection of tags indicating actions performed by Varnish
+ * (see https://www.varnish-cache.org/docs/4.1/reference/vsl.html). The grouping
+ * used in varnish-kafka is by request, so for example each backend request triggered
+ * by a single client request will have a different transaction id (and tags) but
+ * will reference the same parent transaction (the main request).
+ */
+static int __match_proto__(VSLQ_dispatch_f) transaction_scribe (struct VSL_data *vsl UNUSED,
+		struct VSL_transaction * const pt[], void *priv) {
+	struct logline* lp = priv;
+	struct VSL_transaction *t;
+	/* Loop through the transations of the grouping */
+	while ((t = *pt++)) {
+		/* Only client requests are allowed */
+		if (t->type != VSL_t_req)
+			continue;
+		if (t->reason == VSL_r_esi)
+			continue;
+		/* loop through the tags */
+		while (VSL_Next(t->c) == 1) {
+			parse_tag(lp, t);
+		}
+	}
+	return 0;
+}
+
+
+
+/**
  * varnishkafka logger
  */
-void vk_log0 (const char *func, const char *file, int line,
+void vk_log0 (const char *func UNUSED, const char *file UNUSED, int line UNUSED,
 	      const char *facility, int level, const char *fmt, ...) {
 	va_list ap;
 	static char buf[8192];
@@ -1846,6 +1641,7 @@ void vk_log0 (const char *func, const char *file, int line,
 	if (conf.log_to & VK_LOG_STDERR)
 		fprintf(stderr, "%%%i %s: %s\n", level, facility, buf);
 }
+
 
 /**
  * Appends a formatted string to the conf.stats_fp file.
@@ -1875,13 +1671,14 @@ void vk_log_stats(const char *fmt, ...) {
 
 	/* flush stats_fp to make sure valid JSON data
 	   (e.g. full lines with closing object brackets)
-       is written to disk */
+	   is written to disk */
 	if (fflush(conf.stats_fp)) {
 		vk_log("STATS", LOG_ERR,
 			"Failed to fflush log.statistics.file %s: %s",
 			conf.stats_file, strerror(errno));
 	}
 }
+
 
 /**
  * Closes and reopens any open logging file pointers.
@@ -1900,6 +1697,7 @@ static void logrotate(void) {
 	conf.need_logrotate = 0;
 }
 
+
 /**
  * Hangup signal handler.
  * Sets the global logratate variable to 1 to indicate
@@ -1907,7 +1705,7 @@ static void logrotate(void) {
  * as soon as possible.
  *
  */
-static void sig_hup(int sig) {
+static void sig_hup(int sig UNUSED) {
 	conf.need_logrotate = 1;
 }
 
@@ -1937,31 +1735,38 @@ static void usage (const char *argv0) {
 		"varnishkafka version %s\n"
 		"Varnish log listener with Apache Kafka producer support\n"
 		"\n"
-		"Usage: %s [VSL_ARGS] [-S <config-file>]\n"
+		" Usage: %s [-S <config-file>] [-n <varnishd instance>] "
+		" [-N VSM filename] [-q VSL query] [-D daemonize]\n"
 		"\n"
-		" VSL_ARGS are standard Varnish VSL arguments:\n"
-		"  %s\n"
-		"\n"
-		" The VSL_ARGS can also be set through the configuration file\n"
-		" with \"varnish.arg.<..> = <..>\"\n"
+		" Args can also be set through the configuration file "
+		" (check the default configuration file for examples).\n"
 		"\n"
 		" Default configuration file path: %s\n"
 		"\n",
 		VARNISHKAFKA_VERSION,
 		argv0,
-		VSL_USAGE,
 		VARNISHKAFKA_CONF_PATH);
 	exit(1);
 }
 
+
+static void varnish_api_cleaning(void) {
+	if (conf.vslq)
+		VSLQ_Delete(&conf.vslq);
+
+	if (conf.vsl)
+		VSL_Delete(conf.vsl);
+
+	if (conf.vsm)
+		VSM_Delete(conf.vsm);
+
+}
 
 int main (int argc, char **argv) {
 	char errstr[4096];
 	char hostname[1024];
 	struct hostent *lh;
 	char c;
-	int r;
-	int i;
 
 	/*
 	 * Default configuration
@@ -1971,11 +1776,8 @@ int main (int argc, char **argv) {
 	conf.log_rate  = 100;
 	conf.log_rate_period = 60;
 	conf.daemonize = 1;
-	conf.datacopy  = 1;
 	conf.tag_size_max   = 2048;
-	conf.loglines_hsize = 5000;
-	conf.loglines_hmax  = 5;
-	conf.scratch_size   = 4096;
+	conf.scratch_size   = 4 * 1024 * 1024; // 4MB
 	conf.stats_interval = 60;
 	conf.stats_file     = strdup("/tmp/varnishkafka.stats.json");
 	conf.log_kafka_msg_error = 1;
@@ -1989,10 +1791,7 @@ int main (int argc, char **argv) {
 	conf.topic_conf = rd_kafka_topic_conf_new();
 	rd_kafka_topic_conf_set(conf.topic_conf, "required_acks", "1", NULL, 0);
 
-	for (i = 0 ; i < FMT_CONF_NUM ; i++)
-		conf.fconf[i].fid = i;
-		
-	conf.format[FMT_CONF_MAIN] = "%l %n %t %{Varnish:time_firstbyte}x %h "
+	conf.format = "%l %n %t %{Varnish:time_firstbyte}x %h "
 		"%{Varnish:handling}x/%s %b %m http://%{Host}i%U%q - - "
 		"%{Referer}i %{X-Forwarded-For}i %{User-agent}i";
 
@@ -2002,28 +1801,36 @@ int main (int argc, char **argv) {
 	lh = gethostbyname(hostname);
 	conf.logname = strdup(lh->h_name);
 
-
-	/* Create varnish shared memory handle */
-	vd = VSM_New();
-	VSL_Setup(vd);
-
 	/* Parse command line arguments */
-	while ((c = getopt(argc, argv, VSL_ARGS "hS:")) != -1) {
+	while ((c = getopt(argc, argv, "hS:N:Dq:n:")) != -1) {
 		switch (c) {
 		case 'h':
 			usage(argv[0]);
 			break;
 		case 'S':
+			/* varnish-kafka config filepath */
 			conf_file_path = optarg;
 			break;
-		case 'm':
-			conf.m_flag = 1;
-			/* FALLTHRU */
+		case 'N':
+			/* Open a specific shm file */
+			conf.N_flag = 1;
+			conf.N_flag_path = strdup(optarg);
+			break;
+		case 'D':
+			conf.daemonize = 1;
+			break;
+		case 'q':
+			/* VSLQ query */
+			conf.q_flag = 1;
+			conf.q_flag_query = strdup(optarg);
+			break;
+		case 'n':
+			/* name of varnishd instance to use */
+			conf.n_flag = 1;
+			conf.n_flag_name = strdup(optarg);
+			break;
 		default:
-			if ((r = VSL_Arg(vd, c, optarg)) == 0)
-				usage(argv[0]);
-			else if (r == -1)
-				exit(1); /* VSL_Arg prints error message */
+			usage(argv[0]);
 			break;
 		}
 	}
@@ -2034,9 +1841,6 @@ int main (int argc, char **argv) {
 
 	if (!conf.topic)
 		usage(argv[0]);
-
-	/* Always include client communication (-c) */
-	VSL_Arg(vd, 'c', NULL);
 
 	/* Set up syslog */
 	if (conf.log_to & VK_LOG_SYSLOG)
@@ -2059,8 +1863,7 @@ int main (int argc, char **argv) {
 
 		/* Install SIGHUP handler for logrotating stats_fp. */
 		signal(SIGHUP, sig_hup);
-}
-
+	}
 
 	/* Termination signal handlers */
 	signal(SIGINT, sig_term);
@@ -2079,40 +1882,22 @@ int main (int argc, char **argv) {
 	/* Allocate room for format tag buckets. */
 	conf.tag = calloc(VSL_TAGS_MAX, sizeof(*conf.tag));
 
-	/* Parse the format strings */
-	for (i = 0 ; i < FMT_CONF_NUM ; i++) {
-		if (!conf.format[i])
-			continue;
-
-		if (format_parse(&conf.fconf[i], conf.format[i],
-				 errstr, sizeof(errstr)) == -1) {
-			vk_log("FMTPARSE", LOG_ERR,
-			       "Failed to parse %s format string: %s\n%s",
-			       fmt_conf_names[i], conf.format[i], errstr);
-			exit(1);
-		}
-
-		conf.fconf_cnt++;
-		conf.total_fmt_cnt += conf.fconf[i].fmt_cnt;
+	/* Parse the format string */
+	if(!conf.format) {
+		vk_log("FMT", LOG_ERR, "No formats defined");
+		exit(1);
 	}
 
-	if (conf.fconf_cnt == 0) {
-		vk_log("FMT", LOG_ERR, "No formats defined");
+	if (format_parse(conf.format,
+			 errstr, sizeof(errstr)) == -1) {
+		vk_log("FMTPARSE", LOG_ERR,
+		       "Failed to parse Main format string: %s\n%s",
+		       conf.format, errstr);
 		exit(1);
 	}
 
 	if (conf.log_level >= 7)
 		tag_dump();
-
-	/* Open the log file */
-	if (VSL_Open(vd, 1) != 0) {
-		vk_log("VSLOPEN", LOG_ERR, "Failed to open Varnish VSL: %s\n",
-		       strerror(errno));
-		exit(1);
-	}
-
-	/* Prepare logline cache */
-	loglines_init();
 
 	/* Daemonize if desired */
 	if (conf.daemonize) {
@@ -2144,36 +1929,112 @@ int main (int argc, char **argv) {
 			       conf.topic, strerror(errno));
 			exit(1);
 		}
+
+	}
+
+	/* Varnish VSL declaration (vsm and vsl structures) is done
+	 * in the header file because used in both config.c and varnishkafka.c
+	 */
+	conf.vsl = VSL_New();
+	struct VSL_cursor *vsl_cursor;
+	conf.vsm = VSM_New();
+
+	/* Check if the user wants to open a specific SHM File (-N) or
+	 * a SHM file related to a specific varnishd instance (-n)
+	 */
+	if (conf.N_flag) {
+		if (!VSM_N_Arg(conf.vsm, conf.N_flag_path)) {
+			vk_log("VSM_N_arg", LOG_ERR, "Failed to open %s: %s",
+					conf.N_flag_path, VSM_Error(conf.vsm));
+			varnish_api_cleaning();
+			exit(1);
+		}
+	} else if (conf.n_flag) {
+		if (!VSM_n_Arg(conf.vsm, conf.n_flag_name)) {
+			vk_log("VSM_n_arg", LOG_ERR, "Failed to open shm for varnishd %s: %s",
+					conf.n_flag_name, VSM_Error(conf.vsm));
+			varnish_api_cleaning();
+			exit(1);
+		}
+	}
+
+	if (VSM_Open(conf.vsm) < 0) {
+		vk_log("VSM_OPEN", LOG_ERR, "Failed to open Varnish VSL: %s\n", VSM_Error(conf.vsm));
+		varnish_api_cleaning();
+		exit(1);
+	}
+	vsl_cursor = VSL_CursorVSM(conf.vsl, conf.vsm, VSL_COPT_TAIL | VSL_COPT_BATCH);
+	if (vsl_cursor == NULL) {
+		vk_log("VSL_CursorVSM", LOG_ERR, "Failed to obtain a cursor for the SHM log: %s\n",
+				VSL_Error(conf.vsl));
+		varnish_api_cleaning();
+		exit(1);
+	}
+
+	/* Setting VSLQ query */
+	if (conf.q_flag) {
+		conf.vslq = VSLQ_New(conf.vsl, &vsl_cursor, VSL_g_request, conf.q_flag_query);
+	} else {
+		conf.vslq = VSLQ_New(conf.vsl, &vsl_cursor, VSL_g_request, NULL);
+	}
+	if (conf.vslq == NULL) {
+		vk_log("VSLQ_NEW", LOG_ERR, "Failed to instantiate the VSL query: %s\n",
+				VSL_Error(conf.vsl));
+		varnish_api_cleaning();
+		exit(1);
 	}
 
 	/* Main dispatcher loop depending on outputter */
 	conf.run = 1;
 	conf.pret = 0;
 
-	if (outfunc == out_kafka) {
-		/* Kafka outputter */
+	/* time struct to sleep for 10ms */
+	struct timespec wait_for;
+	wait_for.tv_sec = 0;
+	wait_for.tv_nsec = 10000000L;
 
-		while (conf.run && VSL_Dispatch(vd, parse_tag, NULL) >= 0)
+	/* Creating a new logline (will be re-used across log transactions) */
+	struct logline *lp = NULL;
+	if (unlikely(!(lp = logline_get())))
+		return -1;
+
+	while (conf.run) {
+		int dispatch_status = VSLQ_Dispatch(conf.vslq, transaction_scribe, lp);
+
+		/* Nothing to read from the shm handle, sleeping */
+		if (dispatch_status == 0)
+			nanosleep(&wait_for, NULL);
+
+		/* Varnish log abandoned or overrun, closing gracefully */
+		else if (dispatch_status <= -2) {
+			vk_log("VSLQ_Dispatch", LOG_ERR, "Varnish Log abandoned or overrun.");
+			break;
+		}
+		/* EOF from the Varnish Log, closing gracefully */
+		else if (dispatch_status == -1) {
+			vk_log("VSLQ_Dispatch", LOG_ERR, "Varnish Log EOF.");
+			break;
+		}
+
+		if (outfunc == out_kafka)
 			rd_kafka_poll(rk, 0);
-
-		/* Run until all kafka messages have been delivered
-		 * or we are stopped again */
-		conf.run = 1;
-
-		while (conf.run && rd_kafka_outq_len(rk) > 0)
-			rd_kafka_poll(rk, 100);
-
-		rd_kafka_destroy(rk);
-
-	} else {
-		/* Stdout outputter */
-
-		while (conf.run && VSL_Dispatch(vd, parse_tag, NULL) >= 0)
-			;
-
 	}
 
-	loglines_term();
+	/* Run until all kafka messages have been delivered
+	* or we are stopped again */
+	conf.run = 1;
+
+	if (outfunc == out_kafka) {
+		/* Check if all the messages have been delivered
+		 * to Kafka to update statistics.
+		 */
+		while (conf.run && (rd_kafka_outq_len(rk) > 0))
+			rd_kafka_poll(rk, 100);
+
+		/* Kafka clean-up */
+		rd_kafka_destroy(rk);
+	}
+
 	print_stats();
 
 	/* if stats_fp is set (i.e. open), close it. */
@@ -2181,10 +2042,14 @@ int main (int argc, char **argv) {
 		fclose(conf.stats_fp);
 		conf.stats_fp = NULL;
 	}
+
 	free(conf.stats_file);
+
+	free(lp);
 
 	rate_limiters_rollover(time(NULL));
 
-	VSM_Close(vd);
+	varnish_api_cleaning();
+
 	exit(0);
 }

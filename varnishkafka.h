@@ -39,12 +39,11 @@
 #define unlikely(x) __builtin_expect((x),0)
 #endif
 
-
-
+#define UNUSED __attribute__((unused))
 
 #define VSL_TAGS_MAX 255
 /* A tag that is in all requests but only once. */
-#define VSL_TAG__ONCE  SLT_ReqEnd
+#define VSL_TAG__ONCE  SLT_End
 
 
 /**
@@ -52,41 +51,16 @@
  */
 struct match {
 	const char *ptr;
-	int         len;
-};
-
-
-/* Format configurations */
-#define FMT_CONF_MAIN    0  /* Main format */
-#define FMT_CONF_KEY     1  /* Kafka key format */
-#define FMT_CONF_NUM     2
-
-
-/**
- * Temporary scratch buffer
- */
-struct tmpbuf {
-	struct tmpbuf *next;
-	size_t size;
-	int    of;
-	char   buf[0];  /* Must be at end of struct: allocated to '.size' */
+	size_t     len;
 };
 
 
 /**
- * Currently parsed logline(s)
+ * Currently parsed logline
  */
 struct logline {
-	LIST_ENTRY(logline)  link;
-
-	/* Log id */
-	unsigned int  id;
-
-	/* Per fmt_conf logline matches */
-	struct match *match[FMT_CONF_NUM];
-
-	/* Tags seen (for -m regexp) */
-	uint64_t tags_seen;
+	/* Per fmt logline matches */
+	struct match *match;
 
 	/* Sequence number */
 	uint64_t seq;
@@ -94,15 +68,8 @@ struct logline {
 	/* Last use of this logline */
 	time_t   t_last;
 
-	/* Rendered FMT_CONF_KEY for use in _MAIN output func */
-	char    *key;
-	size_t   key_len;
-
-	/* Auxillery buffers (if scratch pad is not sufficient) */
-	struct tmpbuf *tmpbuf;
-
 	/* Scratch pad */
-	int      sof;
+	size_t   sof;
 	char     scratch[0];  /* Must be at end of struct.
 			       * Allocated to conf.scratch_size bytes */
 };
@@ -114,16 +81,16 @@ struct logline {
 struct tag {
 	struct tag *next;
 	struct fmt *fmt;
-	int    fid;    /* conf.fconf index */
 	int    spec;
 	int    tag;
 	char  *var;
-	int    varlen;
-	int  (*parser) (const struct tag *tag, struct logline *lp,
-			const char *ptr, int len);
+	size_t varlen;
+	size_t (*parser) (const struct tag *tag, struct logline *lp,
+			const char *ptr, size_t len);
 	int    col;
 	int    flags;
 #define TAG_F_NOVARMATCH  0x1  /* Dont attempt to match tag->var to input */
+#define TAG_F_LAST        0x2  /* If multiple, log last one not first one */
 };
 
 /**
@@ -134,9 +101,9 @@ struct fmt {
 	int   idx;        /* fmt[] array index */
 	const char *var;  /* variable name  (for %{..}x,i,o) */
 	const char *def;  /* default string, typically "-" */
-	int   deflen;     /* default string's length */
+	size_t    deflen; /* default string's length */
 	const char *name; /* field name (for JSON, et.al) */
-	int   namelen;    /* name length */
+	size_t   namelen; /* name length */
 	enum {
 		FMT_TYPE_STRING,
 		FMT_TYPE_NUMBER,
@@ -149,6 +116,7 @@ struct fmt {
 typedef enum {
 	VK_ENC_STRING,
 	VK_ENC_JSON,
+	VK_ENC_INVALID,
 } fmt_enc_t;
 
 struct fmt_conf {
@@ -156,8 +124,6 @@ struct fmt_conf {
 	struct fmt *fmt;
 	int         fmt_cnt;
 	int         fmt_size;
-
-	int         fid;  /* conf.fconf index */
 	fmt_enc_t   encoding;
 };
 
@@ -168,25 +134,24 @@ struct fmt_conf {
  * Try to keep commonly used fields at the top.
  */
 struct conf {
-	int         run;
-	int         pret;   /* parse return value: use to exit parser. */
-	int         m_flag;
+    int         run;
+    int         pret;   /* parse return value: use to exit parser. */
+    int         q_flag;
+    char*       q_flag_query;
+    int         N_flag;
+    char*       N_flag_path;
+    int         n_flag;
+    char*       n_flag_name;
+
 
 	/* Sparsely populated with desired tags */
 	struct tag **tag;
 
-	/* Format configurations */
-	struct fmt_conf fconf[FMT_CONF_NUM];
-	int             fconf_cnt;
-
 	uint64_t    sequence_number;
 
 	size_t      scratch_size;    /* Size of scratch buffer */
-	int         datacopy;
 	fmt_enc_t   fmt_enc;
 	int         total_fmt_cnt;
-	int         loglines_hsize;  /* Log id hash size */
-	int         loglines_hmax;   /* Max log ids per hash bucket */
 	int         tag_size_max;    /* Maximum tag size to accept without
 				      * truncating it. */
 
@@ -211,16 +176,20 @@ struct conf {
 
 	int         log_kafka_msg_error;  /* Log Kafka message delivery errors*/
 
-	char       *format[FMT_CONF_NUM]; /* Configured format string(s) */
+	const char *format; /* Configured format string */
 	int         daemonize;
 
-	rd_kafka_conf_t       *rk_conf;
-	rd_kafka_topic_conf_t *topic_conf;
+    rd_kafka_conf_t       *rk_conf;
+    rd_kafka_topic_conf_t *topic_conf;
+
+    /* Varnish shared memory API structures (used in multiple c files) */
+    struct VSM_data *vsm;
+    struct VSL_data *vsl;
+    struct VSLQ *vslq;
 };
 
 extern struct conf conf;
-struct VSM_data *vd;
-
+extern struct fmt_conf fconf;
 
 int conf_file_read (const char *path);
 
@@ -237,11 +206,7 @@ void vk_log0 (const char *func, const char *file, int line,
 void vk_log_stats(const char *fmt, ...)
 	__attribute__((format (printf, 1, 2)));
 
-void out_kafka (struct fmt_conf *fconf, struct logline *lp,
-		const char *buf, size_t len);
-void out_stdout (struct fmt_conf *fconf, struct logline *lp,
-		 const char *buf, size_t len);
-void out_null (struct fmt_conf *fconf, struct logline *lp,
-	       const char *buf, size_t len);
-extern void (*outfunc) (struct fmt_conf *fconf, struct logline *lp,
-			const char *buf, size_t len);
+void out_kafka (struct logline *lp, const char *buf, size_t len);
+void out_stdout (struct logline *lp, const char *buf, size_t len);
+void out_null (struct logline *lp, const char *buf, size_t len);
+extern void (*outfunc) (struct logline *lp, const char *buf, size_t len);
