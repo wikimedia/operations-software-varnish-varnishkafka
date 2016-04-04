@@ -59,8 +59,9 @@ The Apache Kafka support is provided by [librdkafka](https://github.com/edenhill
 	libvarnishapi
 	librdkafka
 	libyajl
-   	pthreads
+	pthreads
 	zlib
+	libm
 
 ## Instructions
 
@@ -81,8 +82,11 @@ The Apache Kafka support is provided by [librdkafka](https://github.com/edenhill
     # Alternative configuration path
     varnishkafka -S /path/to/varnishkafka.conf
 
-    # Read offline log file
-    varnishkafka -r varnishlog.vsl
+    # Read a specific log file
+    varnishkafka -S /path/to/varnishkafka.conf -N /path/to/_.vsm
+
+    # Read a specific Varnish instance log file
+    varnishkafka -S /path/to/varnishkafka.conf -n varnish_instance_name
 
     # Usage description
     varnishkafka -h
