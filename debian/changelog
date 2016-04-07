@@ -1,3 +1,10 @@
+varnishkafka (1.0.8-3) jessie-wikimedia; urgency=medium
+
+  * Remove logrotate/rsyslog configurations.
+  * Add myself to Uploaders.
+
+ -- Luca Toscano <ltoscano@wikimedia.org>  Thu, 07 Apr 2016 11:28:22 +0000
+
 varnishkafka (1.0.8-2) jessie-wikimedia; urgency=medium
 
   * Depend on varnish 4.1.2 instead of 4 to avoid the issues we have seen
