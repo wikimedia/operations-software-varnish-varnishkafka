@@ -19,12 +19,12 @@ CFLAGS  += -DVARNISHKAFKA_CONF_PATH=\"$(CFPATH)\"
 CFLAGS  += -I/usr/include/varnish/
 
 CFLAGS  += -Wall -Werror -O2
-LIBS	+= -lyajl
-LIBS    += -lrdkafka -lvarnishapi -lpthread -lrt -lz -lm
+LDFLAGS += -lyajl
+LDFLAGS += -lrdkafka -lvarnishapi -lpthread -lrt -lz -lm
 
 
 all:
-	gcc $(CFLAGS) $(SRCS) -o $(PROG) $(LIBS)
+	gcc $(CFLAGS) $(SRCS) -o $(PROG) $(LDFLAGS)
 
 
 install:
