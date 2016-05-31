@@ -845,10 +845,18 @@ static int format_parse (const char *format_orig,
 				  .tag_flags = TAG_F_LAST }
 			} },
 		['t'] = { {
-				/* Time the request was received */
+				/* Time the request was received.
+				 * TAG_F_NOVARMATCH forces varnishkafka to avoid
+				 * any sort of var comparison so the .var field is
+				 * not usable for this option. This flag is needed
+				 * since 'var' in %{<strftime-format>}t gets
+				 * the '<strftime-format>' value, that is not
+				 * usable for tag match operations.
+				 * The only option available is:
+				 * - Start timestamp (TAG_F_NOVARMATCH needs to be set)
+				 */
 				{ VSL_CLIENTMARKER, SLT_Timestamp,
 				  .col = 2,
-				  .var = "Start",
 				  .parser = parse_t,
 				  .tag_flags = TAG_F_NOVARMATCH }
 			} },
@@ -1473,13 +1481,39 @@ static int tag_match (struct logline *lp, int spec, enum VSL_tag_e tagid,
 		if (!(tag->spec & spec))
 			continue;
 
+		/*
+		 * TAG_F_NOVARMATCH is a special flag used for format tags like
+		 * %{<strftime-format>}t because the related tag->var value
+		 * is not usable.
+		 * The only use case at the moment is represented by the SLT_Timestamp
+		 * tag that occurs multiple times during the request processing.
+		 * The format is always the same, for example:
+		 * Start: 1464628135.916033 0.000885 0.000084
+		 * TAG_F_NOVARMATCH avoids the match between the tag 't' var
+		 * specified in format_parse and the content of ptr since 'var'
+		 * in %{<strftime-format>}t gets the '<strftime-format>' string value
+		 * (not usable for comparison with the content of the ptr payload).
+		 * This means that at the moment the only possible match for 't' is:
+		 * - Start timestamp (TAG_F_NOVARMATCH needs to be set).
+		 * This feature is not really flexible and it would need to be improved
+		 * in the future to let the users to specify the desired Timestamp in
+		 * their config files, rather than forcing it in the code.
+		 */
 		if ((tag->var) && !(tag->flags & TAG_F_NOVARMATCH)) {
 			const char *t;
 
-			/* Variable match ("Varname: value") */
+			/* Get the occurence of ":" in ("Varname: value") */
 			if (!(t = strnchr(ptr, len, ':')))
 				continue;
 
+			/*
+			 * Variable match ("Varname: value") checks:
+			 * 1) the len of the substring before the ':' (Varname) needs
+			 *    to match the len of the tag requested.
+			 * 2) strncasecmp between ptr (up to tag->varlen chars) and
+			 *    the current tag candidate for the match
+			 *	  must be 0 (so equal strings).
+			 */
 			if (tag->varlen != (int)(t-ptr) ||
 			    strncasecmp(ptr, tag->var, tag->varlen))
 				continue;
