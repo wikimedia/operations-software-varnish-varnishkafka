@@ -318,7 +318,8 @@ static char* scratch_cpy_esc (struct logline *lp, const char *src, size_t* len) 
 
 
 	/* Allocate initial space for escaped string.
-	 * The maximum expansion size per character is 5 (octal coding). */
+	 * The maximum expansion size per character is 5 (octal coding).
+	 */
 	const size_t in_len = *len;
 	char dst[in_len * 5];
 	char *d = dst;
@@ -554,18 +555,28 @@ static size_t parse_t (const struct tag *tag, struct logline *lp,
 	const int timelen   = 64;
 	size_t tlen;
 
-	/* Use config-supplied time formatting */
-	if (tag->var)
-		timefmt = tag->var;
-
-	if (tag->tag == SLT_BereqHeader) {
-		if (unlikely(!strptime(strndupa(ptr, len),
-				       "%a, %d %b %Y %T", &tm)))
-			return 0;
-	} else {
-		time_t t = strtoul(ptr, NULL, 10);
-		localtime_r(&t, &tm);
+	/*
+	 * The special format for tag->var "end:strftime" is used
+	 * to force Varnishkafka to use the SLT_Timestamp 'Resp' instead
+	 * of 'Start' for timestamp formatters. The prefix is removed
+	 * from 'timefmt' accordingly.
+	 */
+	if (tag->var){
+		const char *fmt_tmp = tag->var;
+		// Remove APACHE_LOG_END_PREFIX from the format string
+		if (tag->flags & TAG_F_TIMESTAMP_END) {
+			fmt_tmp += strlen(APACHE_LOG_END_PREFIX);
+		}
+		/* If the rest of the format string without the
+		 * 'end:' prefix is not empty, use it
+		 * in place of the default.
+		 */
+		if (*fmt_tmp)
+			timefmt = fmt_tmp;
 	}
+
+	time_t t = strtoul(ptr, NULL, 10);
+	localtime_r(&t, &tm);
 
 	char dst[timelen];
 
@@ -741,7 +752,26 @@ static int format_parse (const char *format_orig,
 	 */
 	struct {
 		/* A formatter may be backed by multiple tags.
-		 * The first matching tag observed in the log will be used. */
+		 * The first matching tag observed in the log will be used.
+		 *
+		 * Example:
+		 * A formatter declared as following in 'map':
+		 * ['x'] = { {
+		 *		{ VSL_CLIENTMARKER, SLT_Timestamp,
+		 *		  .var = "Process",
+		 *		  .fmtvar = "Varnish:time_firstbyte", .col = 2 },
+		 *		{ VSL_CLIENTMARKER, SLT_Begin,
+		 *		  .fmtvar = "Varnish:xvid", .col = 2 }
+		 *	} },
+		 *
+		 * In this case, the struct below is replicated two
+		 * times to match the 'x' formatter to multiple
+		 * Varnish tags (establishing also a priority).
+		 * Therefore, supposing that 'x' corresponds to 'map[42]',
+		 * the following variables will be accessible:
+		 * - map[42].f[0].var    ==> "Process"
+		 * - map[42].f[1].fmtvar ==> "Varnish:xvid"
+		 */
 		struct {
 			/* VSL_CLIENTMARKER or VSL_BACKENDMARKER, or both */
 			int spec;
@@ -786,7 +816,6 @@ static int format_parse (const char *format_orig,
 		 * (for perf reason the field passed is pointer to
 		 * the start of the substring in the original payload
 		 * plus its length, keep it in mind when writing a parser).
-		 *
 		 */
 		['b'] = { {
 				/* Size of response in bytes, with HTTP headers. */
@@ -845,20 +874,10 @@ static int format_parse (const char *format_orig,
 				  .tag_flags = TAG_F_LAST }
 			} },
 		['t'] = { {
-				/* Time the request was received.
-				 * TAG_F_NOVARMATCH forces varnishkafka to avoid
-				 * any sort of var comparison so the .var field is
-				 * not usable for this option. This flag is needed
-				 * since 'var' in %{<strftime-format>}t gets
-				 * the '<strftime-format>' value, that is not
-				 * usable for tag match operations.
-				 * The only option available is:
-				 * - Start timestamp (TAG_F_NOVARMATCH needs to be set)
-				 */
 				{ VSL_CLIENTMARKER, SLT_Timestamp,
 				  .col = 2,
 				  .parser = parse_t,
-				  .tag_flags = TAG_F_NOVARMATCH }
+				  .tag_flags = TAG_F_TIMESTAMP }
 			} },
 		['U'] = { {
 				/* The URL path requested, not including any query string. */
@@ -881,7 +900,6 @@ static int format_parse (const char *format_orig,
 				  .parser = parse_vcl_handling },
 				{ VSL_CLIENTMARKER, SLT_VCL_Log,
 				  .fmtvar = "VCL_Log:*" },
-
 			} },
 		['n'] = { {
 				{ VSL_CLIENTMARKER, VSL_TAG__ONCE,
@@ -1077,6 +1095,23 @@ static int format_parse (const char *format_orig,
 		for (i = 0 ; map[(int)*s].f[i].spec ; i++) {
 			if (map[(int)*s].f[i].tag == 0)
 				continue;
+
+			/* The %{format}t formatter handles SLT_Timestamp tags.
+			 * Its format allows the use of a prefix like "end:"
+			 * to specify what SLT_Timestamp tag to pick:
+			 * - "end:" corresponds to Varnish "Resp" timestamp.
+			 * - Anything else will default to Varnish "Start" timestamp.
+			 * This check is useful to find string prefixes in all
+			 * the %{}t timestamp formatters and store the result among its tags
+			 * to avoid repeating the same operation at run time for each
+			 * request (wasting resources).
+			 */
+			if ((map[(int)*s].f[i].tag_flags & TAG_F_TIMESTAMP) && var) {
+				if (strncmp(var, APACHE_LOG_END_PREFIX,
+						strlen(APACHE_LOG_END_PREFIX)) == 0) {
+					map[(int)*s].f[i].tag_flags |= TAG_F_TIMESTAMP_END;
+				}
+			}
 
 			/* mapping has fmtvar specified, make sure it
 			 * matches the format's variable. */
@@ -1481,33 +1516,14 @@ static int tag_match (struct logline *lp, int spec, enum VSL_tag_e tagid,
 		if (!(tag->spec & spec))
 			continue;
 
-		/*
-		 * TAG_F_NOVARMATCH is a special flag used for format tags like
-		 * %{<strftime-format>}t because the related tag->var value
-		 * is not usable.
-		 * The only use case at the moment is represented by the SLT_Timestamp
-		 * tag that occurs multiple times during the request processing.
-		 * The format is always the same, for example:
-		 * Start: 1464628135.916033 0.000885 0.000084
-		 * TAG_F_NOVARMATCH avoids the match between the tag 't' var
-		 * specified in format_parse and the content of ptr since 'var'
-		 * in %{<strftime-format>}t gets the '<strftime-format>' string value
-		 * (not usable for comparison with the content of the ptr payload).
-		 * This means that at the moment the only possible match for 't' is:
-		 * - Start timestamp (TAG_F_NOVARMATCH needs to be set).
-		 * This feature is not really flexible and it would need to be improved
-		 * in the future to let the users to specify the desired Timestamp in
-		 * their config files, rather than forcing it in the code.
-		 */
-		if ((tag->var) && !(tag->flags & TAG_F_NOVARMATCH)) {
+		if ((tag->var) && !(tag->flags & TAG_F_TIMESTAMP)){
 			const char *t;
 
 			/* Get the occurence of ":" in ("Varname: value") */
 			if (!(t = strnchr(ptr, len, ':')))
 				continue;
 
-			/*
-			 * Variable match ("Varname: value") checks:
+			/* Variable match ("Varname: value") checks:
 			 * 1) the len of the substring before the ':' (Varname) needs
 			 *    to match the len of the tag requested.
 			 * 2) strncasecmp between ptr (up to tag->varlen chars) and
@@ -1531,6 +1547,38 @@ static int tag_match (struct logline *lp, int spec, enum VSL_tag_e tagid,
 				ptr2 = NULL;
 			}
 
+		} else if (tag->flags & TAG_F_TIMESTAMP) {
+			/* The TAG_F_TIMESTAMP is related to the %{format}t
+			 * output formatter available in the config.
+			 * This formatter is special because tag->var gets populared
+			 * with a string like '%FT%T', that represents a strftime
+			 * compatible formatter, meanwhile there are multiple
+			 * Varnish timestamp to choose (like Start, Resp, etc..) that
+			 * can't be easily be matched comparing the Varnish tag read
+			 * and tag->var. To add some flexibility, these are the
+			 * allowed formats:
+			 * 1) %{end:strftime_formatter}t
+			 * 2) %{strftime_formatter}t
+			 * The "end:" prefix will force Varnishkafka to pick the
+			 * SLT_timestamp "Resp" timestamp, meanwhile the default is to
+			 * use the "Start" one.
+			 * Help to read the if conditions: strncmp returns 0 if the two
+			 * strings are equal (up to some amount of chars) so the not
+			 * operator is needed.
+			 */
+			if (!(tag->flags & TAG_F_TIMESTAMP_END)
+				&& !strncmp(ptr, SLT_TIMESTAMP_START,
+						strlen(SLT_TIMESTAMP_START))) {
+				ptr2 = ptr;
+				len2 = len;
+			} else if ((tag->flags & TAG_F_TIMESTAMP_END)
+					&& !strncmp(ptr, SLT_TIMESTAMP_RESP,
+							strlen(SLT_TIMESTAMP_RESP))) {
+				ptr2 = ptr;
+				len2 = len;
+			} else {
+				continue;
+			}
 		} else {
 			ptr2 = ptr;
 			len2 = len;
