@@ -67,6 +67,12 @@
 #  Additional formatter specials:                                     #
 #    %{<strftime-format>}t - format timestamp according to supplied   #
 #                            strftime(3) compatible format string.    #
+#                            If the format starts with 'end:'         #
+#                            the SLT_Timestamp used is 'Resp'         #
+#                            (end of the request processing),         #
+#                            otherwise SLT_Timestamp 'Start'          #
+#                            will be used.                            #
+#                                                                     #
 #    %{Varnish:xid}x       - transaction id of client request.        #
 #                            Same value as X-Varnish header           #
 #                                                                     #
