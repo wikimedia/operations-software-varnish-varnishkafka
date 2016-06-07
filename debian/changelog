@@ -1,3 +1,13 @@
+varnishkafka (1.0.10-1) jessie-wikimedia; urgency=medium
+
+  * New upstream release: Extend the %{format}t timestamp formatter
+    with the 'end:' prefix.
+    Changes included up to: https://gerrit.wikimedia.org/r/292172
+    Change-Id: Ib20b0cc6fa8ecc2fd6f1fe899d0c5d630681c3e
+    Bug: T136314
+
+ -- Luca Toscano <ltoscano@wikimedia.org>  Tue, 07 Jun 2016 08:45:32 +0000
+
 varnishkafka (1.0.9-1) jessie-wikimedia; urgency=medium
 
   * Use LDFLAGS in Makefile
