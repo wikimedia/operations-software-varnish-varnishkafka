@@ -192,6 +192,12 @@ static int conf_set (const char *name, const char *val,
 	} else if (!strcmp(name, "varnish.arg.N")) {
 		conf.N_flag = 1;
 		conf.N_flag_path = strdup(val);
+	} else if (!strcmp(name, "varnish.arg.T")) {
+		conf.T_flag = 1;
+		conf.T_flag_seconds = strdup(val);
+	} else if (!strcmp(name, "varnish.arg.L")) {
+		conf.L_flag = 1;
+		conf.L_flag_transactions = strdup(val);
 	} else {
 		snprintf(errstr, errstr_size,
 			 "Unknown configuration property \"%s\"\n", name);
