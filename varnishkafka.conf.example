@@ -65,16 +65,27 @@
 #                                                                     #
 #                                                                     #
 #  Additional formatter specials:                                     #
-#    %{<strftime-format>}t - format timestamp according to supplied   #
-#                            strftime(3) compatible format string.    #
-#                            If the format starts with 'end:'         #
-#                            the SLT_Timestamp used is 'Resp'         #
-#                            (end of the request processing),         #
-#                            otherwise SLT_Timestamp 'Start'          #
-#                            will be used.                            #
+#    %{<strftime-format>}t     - format timestamp according           #
+#                                to supplied strftime(3) compatible   #
+#                                format string.                       #
+#                                If the format starts with 'end:'     #
+#                                the SLT_Timestamp used is 'Resp'     #
+#                                (end of the request processing),     #
+#                                otherwise SLT_Timestamp 'Start'      #
+#                                will be used.                        #
 #                                                                     #
-#    %{Varnish:xid}x       - transaction id of client request.        #
-#                            Same value as X-Varnish header           #
+#    %{Varnish:time_firstbyte} - Time to first byte from Varnish.     #
+#                                                                     #
+#    %{Varnish:handling}x      - VCL_call carrying "handling:".       #
+#                                                                     #
+#    %{VCL_Log:var}x           - VLC_Log starting with a "var:".      #
+#                                Example: VCL_Log:hit                 #
+#    %{VSL_API:prefix}x        - VSL API warnings/errors starting     #
+#                                with "prefix". The special           #
+#                                placeholder '*' will match every     #
+#                                string.                              #
+#                                Example: VSL_API:timeout             #
+#                                         VSL_API:*                   #
 #                                                                     #
 #                                                                     #
 #                                                                     #
@@ -194,6 +205,19 @@ daemonize = false
 
 # -N: VSM filename to read logs from.
 # varnish.arg.N = /this/is/a/path
+
+# -T: Max seconds that the VSL API waits between a Begin tag and a End one.
+# Varnish workers write log tags to a buffer that gets flushed
+# to the shmlog once full. It might happen that a Begin
+# tag gets flushed to shmlog as part of a batch without
+# its correspondent End tag (for example, due to long requests).
+# The VSL default is 120.
+# varnish.arg.T = 120
+
+# -L: Upper limit of incomplete VSL transactions kept before
+# the oldest one is force completed.
+# The VSL default is 1000.
+# varnish.arg.L = 1000
 
 
 #######################################################################

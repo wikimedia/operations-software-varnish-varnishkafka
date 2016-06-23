@@ -793,7 +793,7 @@ static int format_parse (const char *format_orig,
 				       const char *ptr, size_t len);
 			/* Optional tag->flags */
 			int tag_flags;
-		} f[4+1]; /* increase size when necessary (max used size + 1) */
+		} f[5+1]; /* increase size when necessary (max used size + 1) */
 
 		/* Default string if no matching tag was found or all
 		 * parsers failed, defaults to "-". */
@@ -900,6 +900,9 @@ static int format_parse (const char *format_orig,
 				  .parser = parse_vcl_handling },
 				{ VSL_CLIENTMARKER, SLT_VCL_Log,
 				  .fmtvar = "VCL_Log:*" },
+				{ VSL_CLIENTMARKER, SLT_VSL,
+				  .fmtvar = "VSL_API:*",
+				  .tag_flags = TAG_F_MATCH_PREFIX },
 			} },
 		['n'] = { {
 				{ VSL_CLIENTMARKER, VSL_TAG__ONCE,
@@ -1516,7 +1519,9 @@ static int tag_match (struct logline *lp, int spec, enum VSL_tag_e tagid,
 		if (!(tag->spec & spec))
 			continue;
 
-		if ((tag->var) && !(tag->flags & TAG_F_TIMESTAMP)){
+		if ((tag->var)
+				&& !(tag->flags & TAG_F_TIMESTAMP)
+				&& !(tag->flags & TAG_F_MATCH_PREFIX)) {
 			const char *t;
 
 			/* Get the occurence of ":" in ("Varname: value") */
@@ -1574,6 +1579,22 @@ static int tag_match (struct logline *lp, int spec, enum VSL_tag_e tagid,
 			} else if ((tag->flags & TAG_F_TIMESTAMP_END)
 					&& !strncmp(ptr, SLT_TIMESTAMP_RESP,
 							strlen(SLT_TIMESTAMP_RESP))) {
+				ptr2 = ptr;
+				len2 = len;
+			} else {
+				continue;
+			}
+		} else if (tag->flags & TAG_F_MATCH_PREFIX) {
+			/* If TAG_F_MATCH_PREFIX is used,  tag->var contains a generic
+			 * prefix match.
+			 * One example is the VSL tag, that emits strings like "timeout"
+			 * or "store overflow", clearly not following the usual
+			 * "$VAR:" format.
+			 * Special use case is the '*' placeholder that will match every
+			 * string.
+			 */
+			if ((tag->var && tag->var[0] == '*') ||
+					!strncmp(ptr, tag->var, tag->varlen)) {
 				ptr2 = ptr;
 				len2 = len;
 			} else {
@@ -1818,7 +1839,8 @@ static void usage (const char *argv0) {
 		"Varnish log listener with Apache Kafka producer support\n"
 		"\n"
 		" Usage: %s [-S <config-file>] [-n <varnishd instance>] "
-		" [-N VSM filename] [-q VSL query] [-D daemonize]\n"
+		" [-N VSM filename] [-q VSL query] [-D daemonize] [-T VSL timeout seconds] "
+		" [-L VSL transactions upper limit]\n"
 		"\n"
 		" Args can also be set through the configuration file "
 		" (check the default configuration file for examples).\n"
@@ -1884,7 +1906,7 @@ int main (int argc, char **argv) {
 	conf.logname = strdup(lh->h_name);
 
 	/* Parse command line arguments */
-	while ((c = getopt(argc, argv, "hS:N:Dq:n:")) != -1) {
+	while ((c = getopt(argc, argv, "hS:N:Dq:n:T:L:")) != -1) {
 		switch (c) {
 		case 'h':
 			usage(argv[0]);
@@ -1911,6 +1933,29 @@ int main (int argc, char **argv) {
 			conf.n_flag = 1;
 			conf.n_flag_name = strdup(optarg);
 			break;
+		case 'T':
+			/* Maximum (VSL) wait time (seconds) between a Begin tag and a End one.
+			 * Varnish workers write log tags to a buffer that gets flushed
+			 * to the shmlog once full. It might happen that a Begin
+			 * tag gets flushed to shmlog as part of a batch without
+			 * its correspondent End tag (for example, due to long requests).
+			 * Consistency checks for the value postponed
+			 * in the VSL_Arg function later on.
+			 * VSL default is 120.
+			 */
+			conf.T_flag = 1;
+			conf.T_flag_seconds = strdup(optarg);
+			break;
+		case 'L':
+			/* Upper limit of incomplete VSL transactions kept before
+			 * the oldest one is force completed.
+			 * Consistency checks for the value postponed
+			 * in the VSL_Arg function later on.
+			 * VSL default is 1000.
+			 */
+			 conf.L_flag = 1;
+			 conf.L_flag_transactions = strdup(optarg);
+			 break;
 		default:
 			usage(argv[0]);
 			break;
@@ -2020,6 +2065,24 @@ int main (int argc, char **argv) {
 	conf.vsl = VSL_New();
 	struct VSL_cursor *vsl_cursor;
 	conf.vsm = VSM_New();
+
+	if (conf.T_flag) {
+		if (VSL_Arg(conf.vsl, 'T', conf.T_flag_seconds) < 0) {
+			vk_log("VSL_T_arg", LOG_ERR, "Failed to set a %s timeout for VSL log transactions: %s",
+					conf.T_flag_seconds, VSL_Error(conf.vsl));
+			varnish_api_cleaning();
+			exit(1);
+		}
+	}
+
+	if (conf.L_flag) {
+		if (VSL_Arg(conf.vsl, 'L', conf.L_flag_transactions) < 0) {
+			vk_log("VSL_L_arg", LOG_ERR, "Failed to set a %s upper limit of VSL log transactions: %s",
+					conf.L_flag_transactions, VSL_Error(conf.vsl));
+			varnish_api_cleaning();
+			exit(1);
+		}
+	}
 
 	/* Check if the user wants to open a specific SHM File (-N) or
 	 * a SHM file related to a specific varnishd instance (-n)

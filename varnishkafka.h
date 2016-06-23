@@ -92,6 +92,9 @@ struct tag {
 #define TAG_F_TIMESTAMP 1           /* var is a SLT_Timestamp formatter */
 #define TAG_F_TIMESTAMP_END 1<<2    /* var contains the end prefix */
 #define TAG_F_LAST 1<<3             /* If multiple, log last one not first one */
+#define TAG_F_MATCH_PREFIX 1<<4     /* var contains a string prefix to match
+                                     * (not following the $VAR: scheme)
+                                     */
 };
 
 /**
@@ -150,6 +153,10 @@ struct conf {
     char*       N_flag_path;
     int         n_flag;
     char*       n_flag_name;
+    int         T_flag;
+    char*       T_flag_seconds;
+    int         L_flag;
+    char*       L_flag_transactions;
 
 
 	/* Sparsely populated with desired tags */
