@@ -1,3 +1,14 @@
+varnishkafka (1.0.11-1) jessie-wikimedia; urgency=medium
+
+ * New upstream release: added the -T and -L command line
+   parameters to tune the VSL API settings. Also added the
+   VLS_API formatter to log VSL warning/errors.
+   Changes included up to: https://gerrit.wikimedia.org/r/#/c/295652/
+   Change-Id: I302922a6490d287e4d866481530d2807293706a8
+   Bug: T136314
+
+ -- Luca Toscano <ltoscano@wikimedia.org>  Tue, 12 Jul 2016 15:31:35 +0200
+
 varnishkafka (1.0.10-1) jessie-wikimedia; urgency=medium
 
   * New upstream release: Extend the %{format}t timestamp formatter
