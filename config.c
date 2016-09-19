@@ -168,6 +168,7 @@ static int conf_set (const char *name, const char *val,
 			conf.sequence_number = (uint64_t)time(NULL)*1000000llu;
 		else
 			conf.sequence_number = strtoull(val, NULL, 0);
+		conf.sequence_number_start = conf.sequence_number;
 	} else if (!strcmp(name, "output")) {
 		if (!strcmp(val, "kafka"))
 			outfunc = out_kafka;

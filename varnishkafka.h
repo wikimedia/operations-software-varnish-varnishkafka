@@ -163,6 +163,10 @@ struct conf {
 	struct tag **tag;
 
 	uint64_t    sequence_number;
+	/* Useful to reset seq from the right starting point,
+	 * defined in the configuration file, when needed.
+	 */
+	uint64_t    sequence_number_start;
 
 	size_t      scratch_size;    /* Size of scratch buffer */
 	fmt_enc_t   fmt_enc;
