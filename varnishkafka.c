@@ -1866,6 +1866,40 @@ static void varnish_api_cleaning(void) {
 
 }
 
+/**
+ * Open and configure VSM/VSL/VSLQ settings. The vslq_query parameter will be
+ * used to know if a VSLQ query/filter needs to be set or not.
+ * Returns 0 in case of success, -1 otherwise.
+ */
+static int varnish_api_open_handles(struct VSM_data **vsm, struct VSL_data **vsl,
+				    struct VSL_cursor **vsl_cursor,
+				    unsigned int vsl_cursor_options,
+				    struct VSLQ **vslq, char* vslq_query) {
+	if (VSM_Open(*vsm) < 0) {
+		vk_log("VSM_OPEN", LOG_DEBUG, "Failed to open Varnish VSL: %s\n", VSM_Error(*vsm));
+		return -1;
+	}
+	*vsl_cursor = VSL_CursorVSM(*vsl, *vsm, vsl_cursor_options);
+	if (*vsl_cursor == NULL) {
+		vk_log("VSL_CursorVSM", LOG_DEBUG, "Failed to obtain a cursor for the SHM log: %s\n",
+			VSL_Error(*vsl));
+		return -1;
+	}
+	/* Setting VSLQ query */
+	if (vslq_query) {
+		*vslq = VSLQ_New(*vsl, vsl_cursor, VSL_g_request, vslq_query);
+	} else {
+		*vslq = VSLQ_New(*vsl, vsl_cursor, VSL_g_request, NULL);
+	}
+	if (*vslq == NULL) {
+		vk_log("VSLQ_NEW", LOG_DEBUG, "Failed to instantiate the VSL query: %s\n",
+			VSL_Error(*vsl));
+		return -1;
+	}
+	return 0;
+}
+
+
 int main (int argc, char **argv) {
 	char errstr[4096];
 	char hostname[1024];
@@ -2063,7 +2097,7 @@ int main (int argc, char **argv) {
 	 * in the header file because used in both config.c and varnishkafka.c
 	 */
 	conf.vsl = VSL_New();
-	struct VSL_cursor *vsl_cursor;
+	struct VSL_cursor *vsl_cursor = NULL;
 	conf.vsm = VSM_New();
 
 	if (conf.T_flag) {
@@ -2103,40 +2137,19 @@ int main (int argc, char **argv) {
 		}
 	}
 
-	if (VSM_Open(conf.vsm) < 0) {
-		vk_log("VSM_OPEN", LOG_ERR, "Failed to open Varnish VSL: %s\n", VSM_Error(conf.vsm));
-		varnish_api_cleaning();
-		exit(1);
-	}
-	vsl_cursor = VSL_CursorVSM(conf.vsl, conf.vsm, VSL_COPT_TAIL | VSL_COPT_BATCH);
-	if (vsl_cursor == NULL) {
-		vk_log("VSL_CursorVSM", LOG_ERR, "Failed to obtain a cursor for the SHM log: %s\n",
-				VSL_Error(conf.vsl));
-		varnish_api_cleaning();
-		exit(1);
-	}
-
-	/* Setting VSLQ query */
-	if (conf.q_flag) {
-		conf.vslq = VSLQ_New(conf.vsl, &vsl_cursor, VSL_g_request, conf.q_flag_query);
-	} else {
-		conf.vslq = VSLQ_New(conf.vsl, &vsl_cursor, VSL_g_request, NULL);
-	}
-	if (conf.vslq == NULL) {
-		vk_log("VSLQ_NEW", LOG_ERR, "Failed to instantiate the VSL query: %s\n",
-				VSL_Error(conf.vsl));
-		varnish_api_cleaning();
-		exit(1);
-	}
-
 	/* Main dispatcher loop depending on outputter */
 	conf.run = 1;
 	conf.pret = 0;
 
 	/* time struct to sleep for 10ms */
-	struct timespec wait_for;
-	wait_for.tv_sec = 0;
-	wait_for.tv_nsec = 10000000L;
+	struct timespec duration_10ms;
+	duration_10ms.tv_sec = 0;
+	duration_10ms.tv_nsec = 10000000L;
+
+	/* time struct to sleep for 100ms */
+	struct timespec duration_100ms;
+	duration_100ms.tv_sec = 0;
+	duration_100ms.tv_nsec = 100000000L;
 
 	/* Creating a new logline (will be re-used across log transactions) */
 	struct logline *lp = NULL;
@@ -2144,17 +2157,44 @@ int main (int argc, char **argv) {
 		return -1;
 
 	while (conf.run) {
+		/* Attempt to connect to the shm log handle if not open. Varnishkafka
+		 * will try to connect periodically to the shm log until it gets one,
+		 * or it will keep trying endlessly.
+		 * Two use cases:
+		 * - varnishkafka is started but varnish is not. This behavior is
+		 *   useful if there is no strict start ordering for varnish and varnishkafka.
+		 * - varnish gets restarted and the shm log handle is not valid anymore.
+		 */
+		if (conf.vsm != NULL && !VSM_IsOpen(conf.vsm)) {
+			if (varnish_api_open_handles(&conf.vsm, &conf.vsl, &vsl_cursor,
+						     VSL_COPT_TAIL | VSL_COPT_BATCH, &conf.vslq,
+						     conf.q_flag_query) == -1) {
+				nanosleep(&duration_100ms, NULL);
+				continue;
+			} else {
+				vk_log("VSLQ_Dispatch", LOG_ERR, "Log acquired!");
+				/* Setting the sequence number back to zero to track
+				 * the fact that Varnish abandoned the log, probably due to
+				 * a restart (or simply that varnishkafka started before varnish).
+				 */
+				conf.sequence_number = conf.sequence_number_start;
+			}
+		}
+
 		int dispatch_status = VSLQ_Dispatch(conf.vslq, transaction_scribe, lp);
 
 		/* Nothing to read from the shm handle, sleeping */
 		if (dispatch_status == 0)
-			nanosleep(&wait_for, NULL);
+			nanosleep(&duration_10ms, NULL);
 
-		/* Varnish log abandoned or overrun, closing gracefully */
+		/* In case of Varnish log abandoned or overrun, the handle needs
+		 * to be closed to allow a reconnect during the next while cycle
+		 */
 		else if (dispatch_status <= -2) {
 			vk_log("VSLQ_Dispatch", LOG_ERR, "Varnish Log abandoned or overrun.");
-			break;
+			VSM_Close(conf.vsm);
 		}
+
 		/* EOF from the Varnish Log, closing gracefully */
 		else if (dispatch_status == -1) {
 			vk_log("VSLQ_Dispatch", LOG_ERR, "Varnish Log EOF.");
