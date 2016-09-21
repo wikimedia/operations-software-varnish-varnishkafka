@@ -2,9 +2,11 @@ varnishkafka (1.0.12-1) jessie-wikimedia; urgency=medium
 
   * New upstream release: improved resiliency during
     Varnish start/restart events.
-    Changes included up to: https://gerrit.wikimedia.org/r/#/c/311415/
-    Change-Id: I87048786b36de325aee663a873b12874588664fb
-    Bug: T138747
+    - Changes included up to: https://gerrit.wikimedia.org/r/#/c/311415/
+    - Change-Id: I87048786b36de325aee663a873b12874588664fb
+    - Bug: T138747
+  * Update Standards-Versions to 3.9.8
+  * Rename git-buildpackage to buildpackage
 
  -- Luca Toscano <ltoscano@wikimedia.org>  Wed, 21 Sep 2016 12:04:00 +0200
 
