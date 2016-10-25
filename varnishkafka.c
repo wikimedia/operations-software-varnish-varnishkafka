@@ -884,7 +884,7 @@ static int format_parse (const char *format_orig,
 				{ VSL_CLIENTMARKER, SLT_ReqURL, .parser = parse_U }
 			} },
 		['u'] = { {
-				{ VSL_CLIENTMARKER, SLT_RespHeader,
+				{ VSL_CLIENTMARKER, SLT_ReqHeader,
 				  .var = "authorization",
 				  .parser = parse_auth_user }
 			} },
