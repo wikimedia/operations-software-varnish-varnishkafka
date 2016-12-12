@@ -1,3 +1,15 @@
+varnishkafka (1.0.12-2) jessie-wikimedia; urgency=medium
+
+  * Update default config file
+    - Get rid of configuration options for features that have been removed,
+      such as format.key and logline.data.copy
+    - Specify the VSL query to use with varnish.arg.q instead of the old
+      varnish.arg.m, used by Varnish 3
+    - Set output to `stdout` in order to have a working-by-default config
+      file
+
+ -- Emanuele Rocca <ema@wikimedia.org>  Mon, 12 Dec 2016 14:59:46 +0100
+
 varnishkafka (1.0.12-1) jessie-wikimedia; urgency=medium
 
   * New upstream release: improved resiliency during
