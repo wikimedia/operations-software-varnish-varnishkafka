@@ -118,6 +118,14 @@ output = kafka
 # Defaults to 2048
 #tag.size.max = 2048
 
+#
+# Kafka TLS/SSL Config
+#
+# kafka.security.protocol=SSL
+# kafka.ssl.ca.location=/somepath/root-ca.crt
+# kafka.ssl.key.password=batman
+# kafka.ssl.key.location=/somepath/client.key
+# kafka.ssl.certificate.location=/somepath/client.pem
 
 # TUNING
 # Logline cache hash tuning

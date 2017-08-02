@@ -45,6 +45,15 @@ Please see the configuration file example,
 The standard Varnish VSL command line arguments are supported, both through
 the command line and configuration file.
 
+## TLS/SSL Support
+
+**varnishkafka** leverages TLS support offered by **librdkafka** simply passing
+the right configuration parameters to it as indicated in this tutorial:
+[Using-SSL-with-librdkafka](https://github.com/edenhill/librdkafka/wiki/Using-SSL-with-librdkafka).
+
+It requires a recent (>= 0.9) version of **librdkafka**. Please check the TLS/SSL section
+of *varnishkafka.conf.example* for more information.
+
 # License
 
 **varnishkafka** is licensed under the 2-clause BSD license.
