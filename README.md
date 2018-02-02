@@ -72,6 +72,9 @@ The Apache Kafka support is provided by [librdkafka](https://github.com/edenhill
 	zlib
 	libm
 
+Please note that the entire codebase assumes the use of glibc, so other C library implementations
+might not compile or work as expected.
+
 ## Instructions
 
 ### Building
