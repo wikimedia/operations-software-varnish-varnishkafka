@@ -27,12 +27,18 @@ Currently supported output formats:
 
 New formats and outputs can easily be added.
 
-# Varnish 4 compatibility
+# Varnish compatibility
 
-Varnishkafka is fully compatible with the new Varnish 4 API, but since they changed
+Varnishkafka is fully compatible with the Varnish 4 and 5.1 APIs, but since they changed
 a lot from the previous version we had to break compatibility with Varnish 3.
 If you want to use Varnishkafka with Varnish 3, please check the related branch.
 New features will be added only to this branch from now on.
+
+# Important notes about internal settings
+
+The initial position of the Varnish log cursor is fixed and set to start
+from the tail of the log. This implies that varnishkafka collects log entries
+that occur while it is running.
 
 # Configuration
 
