@@ -71,8 +71,9 @@ The Apache Kafka support is provided by [librdkafka](https://github.com/edenhill
 # Usage
 
 ## Requirements
-	libvarnishapi
-	librdkafka
+	glibc >=2.19
+	libvarnishapi >=4.1
+	librdkafka >=0.9
 	libyajl
 	pthreads
 	zlib
@@ -80,6 +81,10 @@ The Apache Kafka support is provided by [librdkafka](https://github.com/edenhill
 
 Please note that the entire codebase assumes the use of glibc, so other C library implementations
 might not compile or work as expected.
+
+Varnishkafka uses `daemon()`, which is included by default in glibc 2.19 and
+later. glibc 2.19 or a later version is available in Ubuntu 14.04 or Debian 8.
+To use an earlier version of glibc, compile with the `-D_BSD_SOURCE` flag.
 
 ## Instructions
 

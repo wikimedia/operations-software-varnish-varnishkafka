@@ -29,7 +29,6 @@
  */
 
 #define _XOPEN_SOURCE 500    /* for strptime() */
-#define _BSD_SOURCE          /* for daemon() */
 #define _GNU_SOURCE          /* for strndupa() */
 #include <ctype.h>
 #include <signal.h>
