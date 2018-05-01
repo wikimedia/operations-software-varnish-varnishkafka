@@ -46,10 +46,18 @@
 #include <limits.h>
 #include <stdbool.h>
 
+#include <vdef.h>
 #include <vapi/vsm.h>
 #include <vapi/vsl.h>
+
+/* These two preprocessor directives are used to define the CLI arguments.
+ * This was insipired by varnishncsa 5.2 code and adapted for varnishkafka.
+ */
+#define VOPT_DEFINITION
+#define VOPT_INC "varnishkafka_options.h"
 #include <vapi/voptget.h>
-#include <vdef.h>
+
+#include <vut.h>
 
 #include <librdkafka/rdkafka.h>
 
@@ -68,6 +76,8 @@ static rd_kafka_topic_t *rkt;
 static const char *conf_file_path = VARNISHKAFKA_CONF_PATH;
 
 static void logrotate(void);
+
+static struct VUT *vut;
 
 /**
  * Counters
@@ -1696,7 +1706,7 @@ static int parse_tag(struct logline* lp, struct VSL_transaction *t)
  * by a single client request will have a different transaction id (and tags) but
  * will reference the same parent transaction (the main request).
  */
-static int __match_proto__(VSLQ_dispatch_f)
+static int
 transaction_scribe (struct VSL_data *vsl UNUSED,
                     struct VSL_transaction * const pt[], void *priv) {
     struct logline* lp = priv;
@@ -1796,18 +1806,6 @@ static void logrotate(void) {
 
 
 /**
- * Hangup signal handler.
- * Sets the global logratate variable to 1 to indicate
- * that any open file handles should be closed and reopened
- * as soon as possible.
- *
- */
-static void sig_hup(int sig UNUSED) {
-    conf.need_logrotate = 1;
-}
-
-
-/**
  * Termination signal handler.
  * May be called multiple times (multiple SIGTERM/SIGINT) since a
  * blocking VSL_Dispatch() call cannot be aborted:
@@ -1815,17 +1813,37 @@ static void sig_hup(int sig UNUSED) {
  *                  if succesful the kafka producer can send remaining messages
  *  - second signal: exit directly, queued kafka messages will be lost.
  *
+ * Hangup signal handler.
+ * Sets the global logratate variable to 1 to indicate
+ * that any open file handles should be closed and reopened
+ * as soon as possible.
+ *
  */
-static void sig_term (int sig) {
-    vk_log("TERM", LOG_NOTICE,
-           "Received signal %i: terminating", sig);
-    conf.pret = -1;
-    if (--conf.run <= -1) {
-        vk_log("TERM", LOG_WARNING, "Forced termination");
-        exit(0);
+static void sighandler(int sig) {
+    switch (sig) {
+        case SIGINT:
+            // fall through
+        case SIGTERM:
+            vk_log("TERM", LOG_NOTICE,
+                   "Received signal %i: terminating", sig);
+            conf.pret = -1;
+            if (--conf.run <= -1) {
+                vk_log("TERM", LOG_WARNING, "Forced termination");
+                exit(0);
+            }
+        break;
+        case SIGHUP:
+            conf.need_logrotate = 1;
+        break;
     }
+    VUT_Signaled(vut, sig);
 }
 
+static int poll_rdkafka(struct VUT *v) {
+    if (conf.run && conf.pret >= 0)
+        rd_kafka_poll(rk, 0);
+    return 0;
+}
 
 static void usage (const char *argv0) {
     fprintf(stderr,
@@ -1833,7 +1851,7 @@ static void usage (const char *argv0) {
         "Varnish log listener with Apache Kafka producer support\n"
         "\n"
         " Usage: %s [-S <config-file>] [-n <varnishd instance>] "
-        " [-N VSM filename] [-q VSL query] [-D daemonize] [-T VSL timeout seconds] "
+        " [-N compat ignored] [-q VSL query] [-D daemonize] [-T VSL timeout seconds] "
         " [-L VSL transactions upper limit]\n"
         "\n"
         " Args can also be set through the configuration file "
@@ -1846,53 +1864,6 @@ static void usage (const char *argv0) {
         VARNISHKAFKA_CONF_PATH);
     exit(1);
 }
-
-
-static void varnish_api_cleaning(void) {
-    if (conf.vslq)
-        VSLQ_Delete(&conf.vslq);
-
-    if (conf.vsl)
-        VSL_Delete(conf.vsl);
-
-    if (conf.vsm)
-        VSM_Delete(conf.vsm);
-
-}
-
-/**
- * Open and configure VSM/VSL/VSLQ settings. The vslq_query parameter will be
- * used to know if a VSLQ query/filter needs to be set or not.
- * Returns 0 in case of success, -1 otherwise.
- */
-static int varnish_api_open_handles(struct VSM_data **vsm, struct VSL_data **vsl,
-                                    struct VSL_cursor **vsl_cursor,
-                                    unsigned int vsl_cursor_options,
-                                    struct VSLQ **vslq, char* vslq_query) {
-    if (VSM_Open(*vsm) < 0) {
-        vk_log("VSM_OPEN", LOG_DEBUG, "Failed to open Varnish VSL: %s\n", VSM_Error(*vsm));
-        return -1;
-    }
-    *vsl_cursor = VSL_CursorVSM(*vsl, *vsm, vsl_cursor_options);
-    if (*vsl_cursor == NULL) {
-        vk_log("VSL_CursorVSM", LOG_DEBUG, "Failed to obtain a cursor for the SHM log: %s\n",
-            VSL_Error(*vsl));
-        return -1;
-    }
-    /* Setting VSLQ query */
-    if (vslq_query) {
-        *vslq = VSLQ_New(*vsl, vsl_cursor, VSL_g_request, vslq_query);
-    } else {
-        *vslq = VSLQ_New(*vsl, vsl_cursor, VSL_g_request, NULL);
-    }
-    if (*vslq == NULL) {
-        vk_log("VSLQ_NEW", LOG_DEBUG, "Failed to instantiate the VSL query: %s\n",
-            VSL_Error(*vsl));
-        return -1;
-    }
-    return 0;
-}
-
 
 int main (int argc, char **argv) {
     char errstr[4096];
@@ -1931,6 +1902,9 @@ int main (int argc, char **argv) {
     hostname[sizeof(hostname)-1] = '\0';
     lh = gethostbyname(hostname);
     conf.logname = strdup(lh->h_name);
+    vut = VUT_InitProg(argc, argv, &vopt_spec);
+    vut->dispatch_f = transaction_scribe;
+
 
     /* Parse command line arguments */
     while ((c = getopt(argc, argv, "hS:N:Dq:n:T:L:")) != -1) {
@@ -1943,9 +1917,7 @@ int main (int argc, char **argv) {
             conf_file_path = optarg;
             break;
         case 'N':
-            /* Open a specific shm file */
-            conf.N_flag = 1;
-            conf.N_flag_path = strdup(optarg);
+            vk_log("COMPAT", LOG_NOTICE, "Ignoring -N argument, it is not supported by varnish anymore");
             break;
         case 'D':
             conf.daemonize = 1;
@@ -1984,7 +1956,8 @@ int main (int argc, char **argv) {
              conf.L_flag_transactions = strdup(optarg);
              break;
         default:
-            usage(argv[0]);
+            if (!VUT_Arg(vut, c, optarg))
+              usage(argv[0]);
             break;
         }
     }
@@ -1995,6 +1968,27 @@ int main (int argc, char **argv) {
 
     if (!conf.topic)
         usage(argv[0]);
+
+    if (conf.q_flag) {
+        if (!VUT_Arg(vut, 'q', conf.q_flag_query)) {
+            usage(argv[0]);
+        }
+    }
+    if (conf.n_flag) {
+        if (!VUT_Arg(vut, 'n', conf.n_flag_name)) {
+            usage(argv[0]);
+        }
+    }
+    if (conf.T_flag) {
+        if (!VUT_Arg(vut, 'T', conf.T_flag_seconds)) {
+            usage(argv[0]);
+        }
+    }
+    if (conf.L_flag) {
+        if (!VUT_Arg(vut, 'L', conf.L_flag_transactions)) {
+            usage(argv[0]);
+        }
+    }
 
     /* Set up syslog */
     if (conf.log_to & VK_LOG_SYSLOG)
@@ -2014,14 +2008,7 @@ int main (int argc, char **argv) {
         rd_kafka_conf_set_stats_cb(conf.rk_conf, kafka_stats_cb);
         rd_kafka_conf_set(conf.rk_conf, "statistics.interval.ms", tmp,
                   NULL, 0);
-
-        /* Install SIGHUP handler for logrotating stats_fp. */
-        signal(SIGHUP, sig_hup);
     }
-
-    /* Termination signal handlers */
-    signal(SIGINT, sig_term);
-    signal(SIGTERM, sig_term);
 
     /* Ignore network disconnect signals, handled by rdkafka */
     signal(SIGPIPE, SIG_IGN);
@@ -2048,16 +2035,18 @@ int main (int argc, char **argv) {
         exit(1);
     }
 
+    /* Creating a new logline (will be re-used across log transactions) */
+    struct logline *lp = NULL;
+    if (unlikely(!(lp = logline_get())))
+        return -1;
+    vut->dispatch_priv = lp;
+
     if (conf.log_level >= 7)
         tag_dump();
 
     /* Daemonize if desired */
     if (conf.daemonize) {
-        if (daemon(0, 0) == -1) {
-            vk_log("KAFKANEW", LOG_ERR, "Failed to daemonize: %s",
-                   strerror(errno));
-            exit(1);
-        }
+        VUT_Arg(vut, 'D', optarg);
         conf.log_to &= ~VK_LOG_STDERR;
     }
 
@@ -2080,131 +2069,27 @@ int main (int argc, char **argv) {
                    conf.topic, strerror(errno));
             exit(1);
         }
-
-    }
-
-    /* Varnish VSL declaration (vsm and vsl structures) is done
-     * in the header file because used in both config.c and varnishkafka.c
-     */
-    conf.vsl = VSL_New();
-    struct VSL_cursor *vsl_cursor = NULL;
-    conf.vsm = VSM_New();
-
-    if (conf.T_flag) {
-        if (VSL_Arg(conf.vsl, 'T', conf.T_flag_seconds) < 0) {
-            vk_log("VSL_T_arg", LOG_ERR,
-                   "Failed to set a %s timeout for VSL log transactions: %s",
-                   conf.T_flag_seconds, VSL_Error(conf.vsl));
-            varnish_api_cleaning();
-            exit(1);
-        }
-    }
-
-    if (conf.L_flag) {
-        if (VSL_Arg(conf.vsl, 'L', conf.L_flag_transactions) < 0) {
-            vk_log("VSL_L_arg", LOG_ERR,
-                   "Failed to set a %s upper limit of VSL log transactions: %s",
-                   conf.L_flag_transactions, VSL_Error(conf.vsl));
-            varnish_api_cleaning();
-            exit(1);
-        }
-    }
-
-    /* Check if the user wants to open a specific SHM File (-N) or
-     * a SHM file related to a specific varnishd instance (-n)
-     */
-    if (conf.N_flag) {
-        if (!VSM_N_Arg(conf.vsm, conf.N_flag_path)) {
-            vk_log("VSM_N_arg", LOG_ERR, "Failed to open %s: %s",
-                   conf.N_flag_path, VSM_Error(conf.vsm));
-            varnish_api_cleaning();
-            exit(1);
-        }
-    } else if (conf.n_flag) {
-        if (!VSM_n_Arg(conf.vsm, conf.n_flag_name)) {
-            vk_log("VSM_n_arg", LOG_ERR, "Failed to open shm for varnishd %s: %s",
-                   conf.n_flag_name, VSM_Error(conf.vsm));
-            varnish_api_cleaning();
-            exit(1);
-        }
+        vut->idle_f = poll_rdkafka;
     }
 
     /* Main dispatcher loop depending on outputter */
     conf.run = 1;
     conf.pret = 0;
 
-    /* time struct to sleep for 10ms */
-    struct timespec duration_10ms;
-    duration_10ms.tv_sec = 0;
-    duration_10ms.tv_nsec = 10000000L;
-
-    /* time struct to sleep for 100ms */
-    struct timespec duration_100ms;
-    duration_100ms.tv_sec = 0;
-    duration_100ms.tv_nsec = 100000000L;
-
-    /* Creating a new logline (will be re-used across log transactions) */
-    struct logline *lp = NULL;
-    if (unlikely(!(lp = logline_get())))
-        return -1;
-
-    while (conf.run) {
-        /* Attempt to connect to the shm log handle if not open. Varnishkafka
-         * will try to connect periodically to the shm log until it gets one,
-         * or it will keep trying endlessly.
-         * Two use cases:
-         * - varnishkafka is started but varnish is not. This behavior is
-         *   useful if there is no strict start ordering for varnish and varnishkafka.
-         * - varnish gets restarted and the shm log handle is not valid anymore.
-         */
-        if (conf.vsm != NULL && !VSM_IsOpen(conf.vsm)) {
-            if (varnish_api_open_handles(&conf.vsm, &conf.vsl, &vsl_cursor,
-                                         VSL_COPT_TAIL | VSL_COPT_BATCH, &conf.vslq,
-                                         conf.q_flag_query) == -1) {
-                nanosleep(&duration_100ms, NULL);
-                continue;
-            } else {
-                vk_log("VSLQ_Dispatch", LOG_ERR, "Log acquired!");
-                /* Setting the sequence number back to zero to track
-                 * the fact that Varnish abandoned the log, probably due to
-                 * a restart (or simply that varnishkafka started before varnish).
-                 */
-                conf.sequence_number = conf.sequence_number_start;
-            }
-        }
-
-        int dispatch_status = VSLQ_Dispatch(conf.vslq, transaction_scribe, lp);
-
-        /* Nothing to read from the shm handle, sleeping */
-        if (dispatch_status == 0)
-            nanosleep(&duration_10ms, NULL);
-
-        /* In case of Varnish log abandoned or overrun, the handle needs
-         * to be closed to allow a reconnect during the next while cycle
-         */
-        else if (dispatch_status <= -2) {
-            vk_log("VSLQ_Dispatch", LOG_ERR, "Varnish Log abandoned or overrun.");
-            VSM_Close(conf.vsm);
-        }
-
-        /* EOF from the Varnish Log, closing gracefully */
-        else if (dispatch_status == -1) {
-            vk_log("VSLQ_Dispatch", LOG_ERR, "Varnish Log EOF.");
-            break;
-        }
-
-        if (outfunc == out_kafka)
-            rd_kafka_poll(rk, 0);
-    }
-
-    /* Run until all kafka messages have been delivered
-    * or we are stopped again */
-    conf.run = 1;
+    // Setup VUT
+    VUT_Signal(sighandler);
+    VUT_Setup(vut);
+    VUT_Main(vut);
 
     if (outfunc == out_kafka) {
         /* Check if all the messages have been delivered
          * to Kafka to update statistics.
          */
+
+        /* Run until all kafka messages have been delivered
+        * or we are stopped again */
+        conf.run = 1;
+
         while (conf.run && (rd_kafka_outq_len(rk) > 0))
             rd_kafka_poll(rk, 100);
 
@@ -2220,10 +2105,12 @@ int main (int argc, char **argv) {
         conf.stats_fp = NULL;
     }
 
+    VUT_Fini(&vut);
+    vut = NULL;
+
     free(conf.stats_file);
     free(lp);
     rate_limiters_rollover(time(NULL));
-    varnish_api_cleaning();
 
     exit(0);
 }
