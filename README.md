@@ -27,12 +27,18 @@ Currently supported output formats:
 
 New formats and outputs can easily be added.
 
-# Varnish 4 compatibility
+# Varnish compatibility
 
-Varnishkafka is fully compatible with the new Varnish 4 API, but since they changed
+Varnishkafka is fully compatible with the Varnish 4 and 5.1 APIs, but since they changed
 a lot from the previous version we had to break compatibility with Varnish 3.
 If you want to use Varnishkafka with Varnish 3, please check the related branch.
 New features will be added only to this branch from now on.
+
+# Important notes about internal settings
+
+The initial position of the Varnish log cursor is fixed and set to start
+from the tail of the log. This implies that varnishkafka collects log entries
+that occur while it is running.
 
 # Configuration
 
@@ -45,6 +51,15 @@ Please see the configuration file example,
 The standard Varnish VSL command line arguments are supported, both through
 the command line and configuration file.
 
+## TLS/SSL Support
+
+**varnishkafka** leverages TLS support offered by **librdkafka** simply passing
+the right configuration parameters to it as indicated in this tutorial:
+[Using-SSL-with-librdkafka](https://github.com/edenhill/librdkafka/wiki/Using-SSL-with-librdkafka).
+
+It requires a recent (>= 0.9) version of **librdkafka**. Please check the TLS/SSL section
+of *varnishkafka.conf.example* for more information.
+
 # License
 
 **varnishkafka** is licensed under the 2-clause BSD license.
@@ -56,12 +71,20 @@ The Apache Kafka support is provided by [librdkafka](https://github.com/edenhill
 # Usage
 
 ## Requirements
-	libvarnishapi
-	librdkafka
+	glibc >=2.19
+	libvarnishapi >=4.1
+	librdkafka >=0.9
 	libyajl
 	pthreads
 	zlib
 	libm
+
+Please note that the entire codebase assumes the use of glibc, so other C library implementations
+might not compile or work as expected.
+
+Varnishkafka uses `daemon()`, which is included by default in glibc 2.19 and
+later. glibc 2.19 or a later version is available in Ubuntu 14.04 or Debian 8.
+To use an earlier version of glibc, compile with the `-D_BSD_SOURCE` flag.
 
 ## Instructions
 
