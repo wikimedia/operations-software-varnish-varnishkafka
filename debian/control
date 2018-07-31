@@ -2,14 +2,14 @@ Source: varnishkafka
 Priority: optional
 Maintainer: Faidon Liambotis <paravoid@debian.org>
 Uploaders: Emanuele Rocca <ema@wikimedia.org>, Luca Toscano <ltoscano@wikimedia.org>
-Build-Depends: debhelper (>= 9), libvarnishapi-dev (>=4.1.2), librdkafka-dev,
+Build-Depends: debhelper (>= 9), libvarnishapi-dev (>=4.1.2), librdkafka-dev (>=0.11.5),
  libyajl-dev, zlib1g-dev
 Standards-Version: 3.9.8
 Section: web
 
 Package: varnishkafka
 Architecture: any
-Depends: varnish (>=4.1.2), ${shlibs:Depends}, ${misc:Depends}
+Depends: varnish (>=4.1.2), ${shlibs:Depends}, ${misc:Depends}, lsb-base
 Enhances: varnish
 Description: Varnish to Kafka log streamer
  varnishkafka reads Varnish shared memory logs, formats them and prints them to
