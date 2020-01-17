@@ -1,3 +1,13 @@
+varnishkafka (1.0.14-1) buster-wikimedia; urgency=medium
+
+  * New upstream release
+  * Build against buster (Bug: T242093)
+  * Added myself to the uploaders list
+  * Avoid building against varnish >= 5.2
+  * Target varnish 5.1
+
+ -- Valentin Gutierrez <vgutierrez@wikimedia.org>  Fri, 17 Jan 2020 14:45:52 +0000
+
 varnishkafka (1.0.13-1) stretch-wikimedia; urgency=medium
 
   * New upstream release fixing builds on stretch (Bug: T186250)
