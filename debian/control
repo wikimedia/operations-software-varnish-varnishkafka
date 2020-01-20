@@ -1,8 +1,9 @@
 Source: varnishkafka
 Priority: optional
 Maintainer: Faidon Liambotis <paravoid@debian.org>
-Uploaders: Emanuele Rocca <ema@wikimedia.org>, Luca Toscano <ltoscano@wikimedia.org>
-Build-Depends: debhelper (>= 9), libvarnishapi-dev (>=4.1.2), librdkafka-dev (>=0.11.5),
+Uploaders: Emanuele Rocca <ema@wikimedia.org>, Luca Toscano <ltoscano@wikimedia.org>,
+           Valentin Gutierrez <vgutierrez@wikimedia.org>
+Build-Depends: debhelper (>= 9), libvarnishapi-dev (>=4.1.2), libvarnishapi-dev (<< 5.2), librdkafka-dev (>=0.11.5),
  libyajl-dev, zlib1g-dev
 Standards-Version: 3.9.8
 Section: web
