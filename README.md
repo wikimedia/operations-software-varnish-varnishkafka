@@ -1,7 +1,7 @@
 varnishkafka - varnish log collector with Apache Kafka integration
 ==================================================================
 
-Copyright (c) 2013 [Wikimedia Foundation](http://www.wikimedia.org)
+Copyright (c) 2018 [Wikimedia Foundation](http://www.wikimedia.org)
 
 Copyright (c) 2013 [Magnus Edenhill](http://www.edenhill.se/)
 
@@ -29,10 +29,17 @@ New formats and outputs can easily be added.
 
 # Varnish compatibility
 
-Varnishkafka is fully compatible with the Varnish 4 and 5.1 APIs, but since they changed
-a lot from the previous version we had to break compatibility with Varnish 3.
-If you want to use Varnishkafka with Varnish 3, please check the related branch.
-New features will be added only to this branch from now on.
+The Varnish cache upstream project radically changed a lot of times their API to read
+the shared memory log (introducing non backward compatible changes),
+and Varnishkafka had to adapt as consequence. We chose to keep this convention:
+
+* The **master** branch works from Varnish 5.2 to 6.0.
+* The **varnishv51** branch works from Varnish 4.x to 5.1.
+* The **varnishv3** branch works with Varnish up to 3.x.
+
+The Wikimedia foundation now runs Varnish 5.1 and the last **varnishv51** Varnishkafka
+version, so the most recent changes in master have not been battle tested on our
+production environment.
 
 # Important notes about internal settings
 

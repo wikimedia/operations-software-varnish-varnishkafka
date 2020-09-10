@@ -16,7 +16,7 @@ endif
 
 CFLAGS  += -DVARNISHKAFKA_VERSION=\"$(VER)\"
 CFLAGS  += -DVARNISHKAFKA_CONF_PATH=\"$(CFPATH)\"
-CFLAGS  += -I/usr/include/varnish/
+CFLAGS  += -I/usr/include/varnish/ -I.
 
 CFLAGS  += -Wall -Werror -O2
 LDFLAGS += -lyajl
