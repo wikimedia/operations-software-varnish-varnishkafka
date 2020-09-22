@@ -1,3 +1,11 @@
+varnishkafka (1.0.14-2) UNRELEASED; urgency=medium
+
+  * Update versioned dependency on libvarnishapi-dev. Require at least
+    6.0.6-1wm1 due to breaking API/ABI changes between varnish 5.1 and 5.2.
+    (Bug: T261487)
+
+ -- Emanuele Rocca <ema@wikimedia.org>  Fri, 28 Aug 2020 10:48:30 +0200
+
 varnishkafka (1.0.14-1) buster-wikimedia; urgency=medium
 
   * New upstream release
