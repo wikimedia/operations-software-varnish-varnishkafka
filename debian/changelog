@@ -1,10 +1,14 @@
-varnishkafka (1.0.14-2) UNRELEASED; urgency=medium
+varnishkafka (1.1.0-1) buster-wikimedia; urgency=medium
 
+  * New upstream release
   * Update versioned dependency on libvarnishapi-dev. Require at least
     6.0.6-1wm1 due to breaking API/ABI changes between varnish 5.1 and 5.2.
     (Bug: T261487)
+  * Build-depend on libvarnishapi-dev (<< 6.1) to avoid accidentally building
+    against the official debian packages from buster
+  * Set upstream-branch=master to get Varnish 6 support
 
- -- Emanuele Rocca <ema@wikimedia.org>  Fri, 28 Aug 2020 10:48:30 +0200
+ -- Emanuele Rocca <ema@wikimedia.org>  Tue, 22 Sep 2020 12:20:42 +0000
 
 varnishkafka (1.0.14-1) buster-wikimedia; urgency=medium
 
