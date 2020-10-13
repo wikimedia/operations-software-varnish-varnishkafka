@@ -1906,9 +1906,8 @@ int main (int argc, char **argv) {
     vut = VUT_InitProg(argc, argv, &vopt_spec);
     vut->dispatch_f = transaction_scribe;
 
-
     /* Parse command line arguments */
-    while ((c = getopt(argc, argv, "hS:N:Dq:n:T:L:")) != -1) {
+    while ((c = getopt(argc, argv, "hS:N:Dq:n:T:L:g:")) != -1) {
         switch (c) {
         case 'h':
             usage(argv[0]);
