@@ -199,14 +199,13 @@ static int format_add (int fmtr, const char *var, ssize_t varlen,
                        const char *def, ssize_t deflen, int flags) {
     struct fmt *fmt;
 
-    if (fconf.fmt_cnt >= fconf.fmt_size) {
-        fconf.fmt_size = (fconf.fmt_size ? : 32) * 2;
-        fconf.fmt = realloc(fconf.fmt,
-                     fconf.fmt_size * sizeof(*fconf.fmt));
-    }
-
+    /*
+     * This should never happen normally except if there is an integer overflow
+     * in the couting of the format slots. In that case there is nothing we can
+     * do so simply assert.
+     */
+    assert(fconf.fmt_cnt < fconf.fmt_size);
     fmt = &fconf.fmt[fconf.fmt_cnt];
-    memset(fmt, 0, sizeof(*fmt));
 
     fmt->id    = fmtr;
     fmt->idx   = fconf.fmt_cnt;
@@ -927,6 +926,24 @@ static int format_parse (const char *format_orig, char *errstr, size_t errstr_si
 
     /* Perform legacy replacements. */
     format = string_replace_arr(format_orig, replace);
+
+    s = format;
+    /*
+     * Count all occurences of '%' and then allocate an array that can
+     * fit all format strings in a single allocation (no realloc).
+     * To be sure that all format strings will fit, we double the number of
+     * '%':
+     *   <static string>[%<pattern><static string>]*
+     * and in some cases patterns can contain a '%' too so we overestimate the number
+     * of slots needed.
+     * We start counting from 1 so that even if there are no '%' in the string, we still
+     * allocate enough space to allocate the string (twice as much as needed).
+     */
+    fconf.fmt_size = 1;
+    while ( *s != '\0' &&  (s = strchr(s+1, '%')) )
+      fconf.fmt_size++;
+    fconf.fmt_size *= 2;
+    fconf.fmt = calloc(fconf.fmt_size, sizeof(*fconf.fmt));
 
     /* Parse the format string */
     s = t = format;
