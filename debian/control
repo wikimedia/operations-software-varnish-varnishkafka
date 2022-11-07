@@ -1,9 +1,10 @@
 Source: varnishkafka
 Priority: optional
 Maintainer: Faidon Liambotis <paravoid@debian.org>
-Uploaders: Emanuele Rocca <ema@wikimedia.org>, Luca Toscano <ltoscano@wikimedia.org>,
-           Valentin Gutierrez <vgutierrez@wikimedia.org>
-Build-Depends: debhelper (>= 9), libvarnishapi-dev (>= 6.0.6-1wm1), libvarnishapi-dev (<< 6.1), librdkafka-dev (>=0.11.5), libyajl-dev, zlib1g-dev
+Uploaders: Luca Toscano <ltoscano@wikimedia.org>,
+           Valentin Gutierrez <vgutierrez@wikimedia.org>,
+           Sukhbir Singh <ssingh@wikimedia.org>
+Build-Depends: debhelper-compat (= 13), libvarnishapi-dev (>= 6.0.6-1wm1), libvarnishapi-dev (<< 6.1), librdkafka-dev (>=0.11.5), libyajl-dev, zlib1g-dev
 Standards-Version: 3.9.8
 Section: web
 

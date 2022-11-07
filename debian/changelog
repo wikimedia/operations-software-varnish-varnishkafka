@@ -1,3 +1,12 @@
+varnishkafka (1.1.0-2) bullseye-wikimedia; urgency=medium
+
+  * Bump version and target distribution to bullseye (Bug: T321309)
+  * Set debhelper compat level to 13
+  * Deprecate debian/compat file and use debhelper-compat in debian/control
+  * Drop Emanuele Rocca as the maintainer and add Sukhbir Singh to uploader
+
+ -- Sukhbir Singh <ssingh@wikimedia.org>  Mon, 07 Nov 2022 07:28:36 -0500
+
 varnishkafka (1.1.0-1) buster-wikimedia; urgency=medium
 
   * New upstream release
