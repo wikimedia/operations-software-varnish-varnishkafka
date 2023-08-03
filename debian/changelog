@@ -1,3 +1,11 @@
+varnishkafka (1.1.0-3) bookworm-wikimedia; urgency=medium
+
+  * Bump target distribution to bookworm (Bug: T342154)
+  * Remove SystemV init related files
+  * Add Fabrizio Furnari to uploaders
+
+ -- Fabrizio Furnari <ffurnari@wikimedia.org>  Thu, 03 Aug 2023 11:17:50 +0200
+
 varnishkafka (1.1.0-2) bullseye-wikimedia; urgency=medium
 
   * Bump version and target distribution to bullseye (Bug: T321309)
